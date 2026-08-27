@@ -408,6 +408,10 @@ def build_pulse(
             cadence_of(Cadence.parse(Config.OUTREACH_CADENCE)),
             proactive_message_type="scheduled",
             tz_of=user_manager.get_user_timezone,
+            # presence is not just speech: banking a focus block lands as
+            # a user-authored action event (focus_flow), and showing up
+            # by doing resets the ladder like a reply would
+            presence_kinds=frozenset({"message", "action"}),
         )),
         # the meter's soft gate (phase 7c): past the soft budget, proactive
         # outreach waits. deliberately LAST - the only gate that reads the

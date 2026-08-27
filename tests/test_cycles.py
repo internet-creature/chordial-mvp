@@ -29,7 +29,13 @@ from sqlalchemy.orm import sessionmaker
 
 import src.database.database as db_mod
 from config import Config
-from src.database.models import Base, DeviceEvent, Observation, User
+from src.database.models import (
+    Base,
+    ConversationEvent,
+    DeviceEvent,
+    Observation,
+    User,
+)
 from src.services import focus_flow
 from src.services.cycles import CycleStore, CycleStoreError
 from src.services.workspace import get_store
@@ -417,6 +423,33 @@ def test_completed_block_becomes_one_pip_observation(env):
     assert focus_flow.process_pending(U1) == 0
     with env() as s:
         assert s.query(Observation).count() == 1
+
+
+def test_completed_block_is_presence_for_the_ladder(env):
+    """a landed block also writes ONE user-authored action event: showing
+    up by doing counts as showing up, so the outreach cadence resets for
+    someone banking blocks all week without chatting. same savepoint as
+    the observation, so the source_event_uuid floor guards both."""
+    pk, _ = _device_pk(env)
+    _bank_event(env, U1, pk, 1, task_id=None, seconds=1620,
+                event_type="focus_block.completed", label="bounce stems")
+
+    assert focus_flow.process_pending(U1) == 1
+    with env() as s:
+        rows = s.query(ConversationEvent).all()
+        assert len(rows) == 1
+        assert rows[0].author_type == "user"
+        assert rows[0].kind == "action"
+        assert rows[0].message_type is None
+        assert "bounce stems" in rows[0].content
+        assert "27 min" in rows[0].content
+        event = s.query(DeviceEvent).one()
+        assert rows[0].event_metadata["source_event_uuid"] == event.event_uuid
+
+    # idempotent alongside the observation
+    assert focus_flow.process_pending(U1) == 0
+    with env() as s:
+        assert s.query(ConversationEvent).count() == 1
 
 
 def test_processor_stamps_non_consequence_events(env):

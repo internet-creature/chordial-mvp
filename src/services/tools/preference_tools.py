@@ -9,6 +9,8 @@ import logging
 
 import pytz
 
+from dainframe.pulse import Cadence
+
 from src.managers.user_manager import UserManager
 from src.utils.timezone_utils import canonicalize_timezone
 from dainframe.providers.types import ToolDef
@@ -64,22 +66,50 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
         updates["bot_personality"] = personality
         notes.append(f"switch my style to {personality}")
 
+    # everything validates BEFORE anything writes: one tool call must never
+    # half-apply (a saved tether beside a rejected cadence)
+    schedule_updates: dict = {}
+
     tether = tool_input.get("rewind_tether")
     if tether is not None:
         # the rewind tether is separately opt-in (REWIND_DESIGN section 8):
         # linking a phone platform never by itself turns on pings about
         # quiet focus blocks - only this explicit ask does
-        await _users.merge_schedule_preferences(
-            user_uuid, {"rewind_tether": bool(tether)})
+        schedule_updates["rewind_tether"] = bool(tether)
         notes.append(
             "ping your phone when a focus block runs quiet" if tether
             else "keep quiet-block questions on the desk only")
 
-    if not updates and tether is None:
+    cadence = tool_input.get("outreach_cadence")
+    if cadence:
+        cadence = cadence.strip()
+        if cadence.lower() == "default":
+            # None (not a deleted key) so the wiring's isinstance check
+            # falls through to the house schedule
+            schedule_updates["outreach_cadence"] = None
+            notes.append("check in on the usual schedule again")
+        else:
+            try:
+                parsed = Cadence.parse(cadence)
+            except ValueError as err:
+                return (
+                    f"that cadence didn't parse ({err}). the format is "
+                    "comma-separated waits like '1d x3, 1w x3, 60d' - each "
+                    "wait is a number plus m/h/d/w, xN for how many tries, "
+                    "the last one open-ended - optionally '@ 8-11' for the "
+                    "local hours it should land in. or 'default' to go back "
+                    "to the usual schedule."
+                )
+            schedule_updates["outreach_cadence"] = str(parsed)
+            notes.append(f"hold unanswered check-ins to '{parsed}'")
+
+    if not updates and not schedule_updates:
         return "no recognized preferences to update."
 
     if updates:
         await _users.update_user_preferences(user_uuid, updates)
+    if schedule_updates:
+        await _users.merge_schedule_preferences(user_uuid, schedule_updates)
     return "updated: " + "; ".join(notes)
 
 
@@ -96,7 +126,9 @@ SET_PREFERENCE = Tool(
             "call this immediately - don't wait to be asked. rewind_tether "
             "opts them in (or out) of a phone ping when a focus block sits "
             "quiet and unresolved - only set it when they explicitly ask for "
-            "that."
+            "that. outreach_cadence pins how often you may check in when "
+            "they've gone quiet - only set it when they explicitly ask to "
+            "hear from you more or less often."
         ),
         input_schema={
             "type": "object",
@@ -131,6 +163,21 @@ SET_PREFERENCE = Tool(
                         "unanswered; false to keep those questions on the "
                         "desktop only. Separate consent - never infer it from "
                         "having a linked platform."
+                    ),
+                },
+                "outreach_cadence": {
+                    "type": "string",
+                    "description": (
+                        "How often you may check in while the user isn't "
+                        "replying, as a ladder of waits: comma-separated "
+                        "'<N><m|h|d|w>[ xK]' rungs, the last one open-ended, "
+                        "optionally '@ H-H' for the local hours check-ins "
+                        "should land in. 'monthly only' is '30d'; 'weekly, "
+                        "mornings' is '1w @ 8-11'; '60d' holds at every two "
+                        "months. 'default' returns to the usual schedule "
+                        "(daily for a few days, weekly for a few weeks, then "
+                        "every couple of months). Replying normally speeds "
+                        "things back up unless they've pinned it like this."
                     ),
                 },
             },

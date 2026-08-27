@@ -12,7 +12,8 @@ curation pass is just a second rhythm.
 what the pulse adds that the scheduler never had: a staleness precondition
 (a user who speaks while the firing waits for the stream lock cancels the
 check-in before a single token is spent) and persisted denial horizons (a
-backoff-denied user isn't re-checked every five minutes; the gate says when).
+cadence-denied user isn't re-checked every five minutes; the gate says when -
+even a sixty-day floor sleeps cheaply).
 
 timestamps: chordial stores naive-UTC rows; the pulse normalizes naive as
 UTC (dainframe as_utc), and this wiring hands the pulse an AWARE utc clock.
@@ -31,7 +32,8 @@ from dainframe.core import (
     Stimulus,
 )
 from dainframe.pulse import (
-    BackoffGate,
+    Cadence,
+    CadenceGate,
     as_utc,
     FiringPlan,
     GateDecision,
@@ -94,13 +96,13 @@ def aware_utc_now() -> datetime:
 def checkin_rhythm(every_minutes: Optional[int] = None) -> TaggedRhythm:
     """the regular check-in beat. anchored on the last MESSAGE from anyone:
     a fresh user reply restarts the clock, and so does our own outreach -
-    with the backoff gate stretching the effective wait on ignored chains
-    exactly as before. no anchor at all = first contact, due now (still
-    behind quiet hours: an imported user's first hello never lands at 3am).
+    with the cadence gate holding ignored chains to the re-engagement
+    ladder. no anchor at all = first contact, due now (still behind quiet
+    hours: an imported user's first hello never lands at 3am).
 
     `every_minutes` is the taper's seam (phase 6c): steady scorecards
-    stretch this beat per user - earned quiet - while the backoff gate
-    keeps stretching ignored chains on top of whatever beat is set.
+    stretch this beat per user - earned quiet - while the cadence gate
+    keeps holding ignored chains on top of whatever beat is set.
 
     the rhythm id carries the beat when stretched: the pulse store
     persists a next_check horizon PER KEY and consults it before the
@@ -185,6 +187,40 @@ class ScheduledOnly:
         if firing.kind != "scheduled_tick":
             return GateDecision(True, "not outreach")
         return await self.gate.check(firing, events, now)
+
+
+def cadence_of(default: Cadence):
+    """per-user re-engagement specs: schedule_preferences["outreach_cadence"]
+    (set conversationally via set_preference), parsed fresh each check so a
+    change takes hold on the next tick. the read mirrors the rewind tether's
+    (a schedule_preferences key read straight off the row, off-loop). a
+    missing key is the house schedule; an invalid stored spec is logged and
+    costs the override, never the check-in - and set_preference validates on
+    the way in, so an invalid row here means the spec language itself moved."""
+
+    def read(user_uuid: str) -> Optional[str]:
+        from src.database.database import get_db
+        from src.database.models import User
+
+        with get_db() as db:
+            user = db.query(User).filter(User.uuid == user_uuid).first()
+            prefs = (user.schedule_preferences or {}) if user else {}
+            value = prefs.get("outreach_cadence")
+            return value if isinstance(value, str) else None
+
+    async def resolve(user_uuid: str) -> Cadence:
+        spec = await asyncio.to_thread(read, user_uuid)
+        if spec is None:
+            return default
+        try:
+            return Cadence.parse(spec)
+        except ValueError:
+            logger.warning(
+                "stored outreach_cadence %r for %s no longer parses; "
+                "house default", spec, user_uuid)
+            return default
+
+    return resolve
 
 
 class OnboardingGate:
@@ -343,7 +379,7 @@ def build_pulse(
     presence=None,
 ) -> Pulse:
     """chordial's ambient loop: five-minute cycles, per-user unified recency,
-    the don't-nag gate stack (onboarding -> quiet hours -> backoff, first
+    the don't-nag gate stack (onboarding -> quiet hours -> cadence, first
     denial wins). the pulse store is in-memory: horizons rebuild from the
     event log after a restart, so nothing user-visible is lost (a durable
     PulseStore is a later phase, alongside the other SQL adapters).
@@ -361,12 +397,17 @@ def build_pulse(
             Config.QUIET_HOURS_END,
             tz_of=user_manager.get_user_timezone,
         )),
-        ScheduledOnly(BackoffGate(
-            crew_cap=Config.GATE_CREW_CAP,
-            per_author_cap=Config.GATE_PER_HELPER_CAP,
-            base_interval=timedelta(hours=Config.GATE_BASE_INTERVAL_HOURS),
+        # the re-engagement ladder (replacing the doubling backoff, whose
+        # caps went permanently silent after ~a day of trying): the house
+        # spec parses at build time so a broken env var fails the boot, not
+        # a 3am firing. per-user overrides resolve per check. the gate's
+        # event window stays the library default - it is cadence-counting
+        # depth, not prompt history, and the gate widens it to cover
+        # whatever ladder a user stores.
+        ScheduledOnly(CadenceGate(
+            cadence_of(Cadence.parse(Config.OUTREACH_CADENCE)),
             proactive_message_type="scheduled",
-            window=Config.MAX_HISTORY_MESSAGES,
+            tz_of=user_manager.get_user_timezone,
         )),
         # the meter's soft gate (phase 7c): past the soft budget, proactive
         # outreach waits. deliberately LAST - the only gate that reads the

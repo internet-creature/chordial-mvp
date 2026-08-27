@@ -1,0 +1,39 @@
+# the seam's guard (OPERATIONS.md): the dainframe is an unpinned path
+# dependency, so a dev machine sitting on feature branches never tests the
+# combination that actually ships. this does - chordial at the pushed ref,
+# the dainframe at main, side by side like the deploy layout.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: chordial-mvp
+
+      - uses: actions/checkout@v4
+        with:
+          repository: internet-creature/the-dainframe
+          ref: main
+          path: the-dainframe
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: install poetry
+        run: pipx install poetry
+
+      - name: install
+        working-directory: chordial-mvp
+        run: poetry install
+
+      - name: pytest
+        working-directory: chordial-mvp
+        run: poetry run pytest

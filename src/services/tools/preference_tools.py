@@ -9,6 +9,8 @@ import logging
 
 import pytz
 
+from dainframe.pulse import Cadence
+
 from src.managers.user_manager import UserManager
 from src.utils.timezone_utils import canonicalize_timezone
 from dainframe.providers.types import ToolDef
@@ -75,7 +77,32 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
             "ping your phone when a focus block runs quiet" if tether
             else "keep quiet-block questions on the desk only")
 
-    if not updates and tether is None:
+    cadence = tool_input.get("outreach_cadence")
+    if cadence:
+        cadence = cadence.strip()
+        if cadence.lower() == "default":
+            # None (not a deleted key) so the wiring's isinstance check
+            # falls through to the house schedule
+            await _users.merge_schedule_preferences(
+                user_uuid, {"outreach_cadence": None})
+            notes.append("check in on the usual schedule again")
+        else:
+            try:
+                parsed = Cadence.parse(cadence)
+            except ValueError as err:
+                return (
+                    f"that cadence didn't parse ({err}). the format is "
+                    "comma-separated waits like '1d x3, 1w x3, 60d' - each "
+                    "wait is a number plus m/h/d/w, xN for how many tries, "
+                    "the last one open-ended - optionally '@ 8-11' for the "
+                    "local hours it should land in. or 'default' to go back "
+                    "to the usual schedule."
+                )
+            await _users.merge_schedule_preferences(
+                user_uuid, {"outreach_cadence": str(parsed)})
+            notes.append(f"hold unanswered check-ins to '{parsed}'")
+
+    if not updates and tether is None and not cadence:
         return "no recognized preferences to update."
 
     if updates:
@@ -96,7 +123,9 @@ SET_PREFERENCE = Tool(
             "call this immediately - don't wait to be asked. rewind_tether "
             "opts them in (or out) of a phone ping when a focus block sits "
             "quiet and unresolved - only set it when they explicitly ask for "
-            "that."
+            "that. outreach_cadence pins how often you may check in when "
+            "they've gone quiet - only set it when they explicitly ask to "
+            "hear from you more or less often."
         ),
         input_schema={
             "type": "object",
@@ -131,6 +160,21 @@ SET_PREFERENCE = Tool(
                         "unanswered; false to keep those questions on the "
                         "desktop only. Separate consent - never infer it from "
                         "having a linked platform."
+                    ),
+                },
+                "outreach_cadence": {
+                    "type": "string",
+                    "description": (
+                        "How often you may check in while the user isn't "
+                        "replying, as a ladder of waits: comma-separated "
+                        "'<N><m|h|d|w>[ xK]' rungs, the last one open-ended, "
+                        "optionally '@ H-H' for the local hours check-ins "
+                        "should land in. 'monthly only' is '30d'; 'weekly, "
+                        "mornings' is '1w @ 8-11'; '60d' holds at every two "
+                        "months. 'default' returns to the usual schedule "
+                        "(daily for a few days, weekly for a few weeks, then "
+                        "every couple of months). Replying normally speeds "
+                        "things back up unless they've pinned it like this."
                     ),
                 },
             },

@@ -199,13 +199,15 @@ class Config:
         if h.strip()
     ]
 
-    # proactive-outreach gate (see services/proactivity_gate.py): hard caps on
-    # unanswered proactive messages plus exponential backoff between them.
-    # replaces the old single-step DELAY_AFTER_IGNORED_HOURS rule. checked
-    # BEFORE any generation - a denied tick costs zero tokens.
-    GATE_PER_HELPER_CAP = int(os.getenv("GATE_PER_HELPER_CAP", "3"))
-    GATE_CREW_CAP = int(os.getenv("GATE_CREW_CAP", "4"))
-    GATE_BASE_INTERVAL_HOURS = float(os.getenv("GATE_BASE_INTERVAL_HOURS", "3"))
+    # proactive-outreach cadence (dainframe CadenceGate): unanswered outreach
+    # climbs a declared ladder instead of the old doubling-toward-a-cap
+    # backoff, which went permanently silent after ~a day of trying. the
+    # default reads: once each morning for a few days, then weekly for a few
+    # weeks, then every couple of months forever - the sentinel keeps its
+    # post. per-user overrides live in schedule_preferences["outreach_cadence"]
+    # (set_preference), same spec language. checked BEFORE any generation -
+    # a denied tick costs zero tokens.
+    OUTREACH_CADENCE = os.getenv("OUTREACH_CADENCE", "1d x3, 1w x3, 60d @ 8-11")
 
     # compressor (legacy per-message compression; off by default in favor of
     # full-history context, which is both simpler and cache-friendly)

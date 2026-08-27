@@ -400,11 +400,13 @@ def build_pulse(
         # the re-engagement ladder (replacing the doubling backoff, whose
         # caps went permanently silent after ~a day of trying): the house
         # spec parses at build time so a broken env var fails the boot, not
-        # a 3am firing. per-user overrides resolve per check.
+        # a 3am firing. per-user overrides resolve per check. the gate's
+        # event window stays the library default - it is cadence-counting
+        # depth, not prompt history, and the gate widens it to cover
+        # whatever ladder a user stores.
         ScheduledOnly(CadenceGate(
             cadence_of(Cadence.parse(Config.OUTREACH_CADENCE)),
             proactive_message_type="scheduled",
-            window=Config.MAX_HISTORY_MESSAGES,
             tz_of=user_manager.get_user_timezone,
         )),
         # the meter's soft gate (phase 7c): past the soft budget, proactive

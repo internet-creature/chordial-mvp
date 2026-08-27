@@ -66,13 +66,16 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
         updates["bot_personality"] = personality
         notes.append(f"switch my style to {personality}")
 
+    # everything validates BEFORE anything writes: one tool call must never
+    # half-apply (a saved tether beside a rejected cadence)
+    schedule_updates: dict = {}
+
     tether = tool_input.get("rewind_tether")
     if tether is not None:
         # the rewind tether is separately opt-in (REWIND_DESIGN section 8):
         # linking a phone platform never by itself turns on pings about
         # quiet focus blocks - only this explicit ask does
-        await _users.merge_schedule_preferences(
-            user_uuid, {"rewind_tether": bool(tether)})
+        schedule_updates["rewind_tether"] = bool(tether)
         notes.append(
             "ping your phone when a focus block runs quiet" if tether
             else "keep quiet-block questions on the desk only")
@@ -83,8 +86,7 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
         if cadence.lower() == "default":
             # None (not a deleted key) so the wiring's isinstance check
             # falls through to the house schedule
-            await _users.merge_schedule_preferences(
-                user_uuid, {"outreach_cadence": None})
+            schedule_updates["outreach_cadence"] = None
             notes.append("check in on the usual schedule again")
         else:
             try:
@@ -98,15 +100,16 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
                     "local hours it should land in. or 'default' to go back "
                     "to the usual schedule."
                 )
-            await _users.merge_schedule_preferences(
-                user_uuid, {"outreach_cadence": str(parsed)})
+            schedule_updates["outreach_cadence"] = str(parsed)
             notes.append(f"hold unanswered check-ins to '{parsed}'")
 
-    if not updates and tether is None and not cadence:
+    if not updates and not schedule_updates:
         return "no recognized preferences to update."
 
     if updates:
         await _users.update_user_preferences(user_uuid, updates)
+    if schedule_updates:
+        await _users.merge_schedule_preferences(user_uuid, schedule_updates)
     return "updated: " + "; ".join(notes)
 
 

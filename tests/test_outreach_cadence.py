@@ -125,6 +125,17 @@ def test_set_preference_rejects_junk_and_stores_nothing(db):
     assert _stored(db) is None
 
 
+def test_set_preference_never_half_applies(db):
+    """a valid tether beside an invalid cadence: the whole call must be a
+    no-op, not a saved tether behind an error message."""
+    reply = run(_set_preference(
+        {"rewind_tether": True, "outreach_cadence": "vibes"}, CTX))
+    assert "didn't parse" in reply
+    with db() as s:
+        user = s.query(User).filter(User.uuid == "u1").first()
+        assert (user.schedule_preferences or {}) == {}
+
+
 def test_set_preference_default_returns_to_the_house_schedule(db):
     run(_set_preference({"outreach_cadence": "60d"}, CTX))
     reply = run(_set_preference({"outreach_cadence": "default"}, CTX))
@@ -146,7 +157,9 @@ def _seed(db, author_type, author, content, at, message_type="conversation"):
         s.commit()
 
 
-def _tick(db):
+def _make_pulse(db, clock):
+    """one pulse over one store, ticking at whatever time `clock` says -
+    the persisted-horizon behavior only shows across reused state."""
     from src.agents import AgentOutcome
     from src.managers.user_manager import UserManager
     from src.services.orchestration import build_orchestrator
@@ -169,8 +182,13 @@ def _tick(db):
     )
     pulse = build_pulse(
         orchestrator=orch, user_manager=UserManager(),
-        platforms=["discord"], now=lambda: NOW,
+        platforms=["discord"], now=lambda: clock["now"],
     )
+    return pulse, calls
+
+
+def _tick(db):
+    pulse, calls = _make_pulse(db, {"now": NOW})
     run(pulse.tick())
     return calls
 
@@ -190,3 +208,29 @@ def test_a_reply_resets_the_ladder_and_the_checkin_flows(db):
           message_type="scheduled")
     _seed(db, "user", "user", "sorry, busy day!", NOW - timedelta(hours=2))
     assert _tick(db) == [("discord", "42", "checking in~")]
+
+
+def test_a_reply_wakes_a_persisted_denial_within_the_bound(db):
+    """ONE pulse over ONE store across the whole arc: a cadence denial
+    persists its horizon, the user replies during it, and the next beat
+    still flows - because the gate bounds its horizons (six hours), the
+    store's sleep cannot outlive the reply by more than one bound. with an
+    unbounded horizon this tick would sleep until the ladder's next
+    morning and the delivery below would never happen."""
+    clock = {"now": NOW}
+    pulse, calls = _make_pulse(db, clock)
+
+    _seed(db, "user", "user", "hi", NOW - timedelta(days=2))
+    _seed(db, "agent", "vel", "checking in~", NOW - timedelta(hours=2),
+          message_type="scheduled")
+    run(pulse.tick())
+    assert calls == []  # the ladder holds yesterday's unanswered outreach
+
+    # the user comes back mid-horizon...
+    _seed(db, "user", "user", "sorry! long day", NOW + timedelta(minutes=30))
+
+    # ...and one bound later (7pm pacific: inside waking hours) the ordinary
+    # beat fires: the reply reset the ladder, the horizon did not entomb it
+    clock["now"] = NOW + timedelta(hours=7)
+    run(pulse.tick())
+    assert calls == [("discord", "42", "checking in~")]

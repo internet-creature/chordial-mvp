@@ -224,6 +224,33 @@ def test_banking_a_block_resets_the_ladder_like_a_reply(db):
     assert _tick(db) == [("discord", "42", "checking in~")]
 
 
+def test_fresh_presence_restarts_the_checkin_clock(db):
+    """sol's repro: presence that clears the ladder must ALSO restart the
+    beat's recency clock - otherwise a long-overdue beat fires minutes
+    after the user banks a block, which is outreach at someone who is
+    demonstrably right here. the rhythm anchors on activity, not just
+    messages, so the five-minute-old action holds the beat."""
+    _seed(db, "user", "user", "hi", NOW - timedelta(days=2))
+    _seed(db, "agent", "vel", "checking in~", NOW - timedelta(hours=3),
+          message_type="scheduled")
+    _seed(db, "user", "user", 'landed "essay" - 27 min',
+          NOW - timedelta(minutes=5), message_type=None, kind="action")
+    assert _tick(db) == []
+
+
+def test_backfilled_presence_neither_resets_nor_wakes_anything(db):
+    """an offline device syncing a days-old block writes the action with
+    its honest occurred_at: inserted AFTER the unanswered outreach but
+    timestamped before it, it must not reset the chain - the user is
+    still gone, whatever the sync queue just delivered."""
+    _seed(db, "user", "user", "hi", NOW - timedelta(days=2))
+    _seed(db, "agent", "vel", "checking in~", NOW - timedelta(hours=3),
+          message_type="scheduled")
+    _seed(db, "user", "user", 'landed "essay" - 27 min',
+          NOW - timedelta(days=3), message_type=None, kind="action")
+    assert _tick(db) == []
+
+
 def test_a_reply_wakes_a_persisted_denial_within_the_bound(db):
     """ONE pulse over ONE store across the whole arc: a cadence denial
     persists its horizon, the user replies during it, and the next beat

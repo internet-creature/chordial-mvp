@@ -61,9 +61,13 @@ CHECKIN_RHYTHM = "checkin"
 CURATION_RHYTHM = "curation"
 
 # the recency clock: any MESSAGE on any platform (one person on two platforms
-# is one schedule slot). action/note rows are invisible by construction - a
-# tool action or switch notice never masquerades as "the assistant replied".
-ANY_MESSAGE = EventQuery(kinds=frozenset({"message"}))
+# is one schedule slot), and any ACTION - banking a focus block is the user
+# showing up, and presence must restart the check-in clock exactly like a
+# reply, or the beat fires minutes after they bank a block (agent tool
+# actions trail their own replies by seconds, so counting them moves
+# nothing). system notes stay invisible - a switch notice never masquerades
+# as activity.
+RECENT_ACTIVITY = EventQuery(kinds=frozenset({"message", "action"}))
 USER_MESSAGES = EventQuery(
     kinds=frozenset({"message"}), author_types=frozenset({"user"})
 )
@@ -94,11 +98,12 @@ def aware_utc_now() -> datetime:
 
 
 def checkin_rhythm(every_minutes: Optional[int] = None) -> TaggedRhythm:
-    """the regular check-in beat. anchored on the last MESSAGE from anyone:
-    a fresh user reply restarts the clock, and so does our own outreach -
-    with the cadence gate holding ignored chains to the re-engagement
-    ladder. no anchor at all = first contact, due now (still behind quiet
-    hours: an imported user's first hello never lands at 3am).
+    """the regular check-in beat. anchored on the last ACTIVITY from anyone
+    (messages, and action events - a banked block restarts the clock like
+    a reply): a fresh user showing-up restarts it, and so does our own
+    outreach - with the cadence gate holding ignored chains to the
+    re-engagement ladder. no anchor at all = first contact, due now (still
+    behind quiet hours: an imported user's first hello never lands at 3am).
 
     `every_minutes` is the taper's seam (phase 6c): steady scorecards
     stretch this beat per user - earned quiet - while the cadence gate
@@ -121,7 +126,7 @@ def checkin_rhythm(every_minutes: Optional[int] = None) -> TaggedRhythm:
         kind="scheduled_tick",
         rhythm=Interval(
             every=timedelta(minutes=minutes),
-            anchor=ANY_MESSAGE,
+            anchor=RECENT_ACTIVITY,
         ),
     )
 
@@ -400,10 +405,8 @@ def build_pulse(
         # the re-engagement ladder (replacing the doubling backoff, whose
         # caps went permanently silent after ~a day of trying): the house
         # spec parses at build time so a broken env var fails the boot, not
-        # a 3am firing. per-user overrides resolve per check. the gate's
-        # event window stays the library default - it is cadence-counting
-        # depth, not prompt history, and the gate widens it to cover
-        # whatever ladder a user stores.
+        # a 3am firing. per-user overrides resolve per check. the gate
+        # reads exactly what the ladder needs - no history-window knob.
         ScheduledOnly(CadenceGate(
             cadence_of(Cadence.parse(Config.OUTREACH_CADENCE)),
             proactive_message_type="scheduled",

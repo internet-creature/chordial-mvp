@@ -150,6 +150,12 @@ def _presence_event(row: DeviceEvent) -> ConversationEvent:
     what = f'"{label}"' if isinstance(label, str) and label.strip() else \
         "a focus block"
     minutes = _minutes(_seconds(payload.get("run_seconds")))
+    # the row carries the moment the block LANDED, not the moment its sync
+    # was processed: a device background-syncing an offline backlog must
+    # read as history, never as "they showed up just now" - the gates and
+    # the recency clock order presence by this timestamp. clamped to now
+    # so a device clock running ahead can't park presence in the future.
+    happened = min(row.occurred_at or utc_now(), utc_now())
     return ConversationEvent(
         user_uuid=row.user_uuid,
         stream_id=row.user_uuid,
@@ -159,6 +165,7 @@ def _presence_event(row: DeviceEvent) -> ConversationEvent:
         kind="action",
         content=f"landed {what} - {minutes} min",
         message_type=None,
+        created_at=happened,
         event_metadata={"source_event_uuid": row.event_uuid},
     )
 

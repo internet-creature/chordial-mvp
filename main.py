@@ -219,7 +219,9 @@ def _dainframe_stamp() -> str:
             ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5,
         ).stdout.strip()
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
+        # SubprocessError covers TimeoutExpired: a hung git must degrade
+        # the stamp, never abort the boot
         sha = ""
     return f"dainframe {version}{f' @ {sha}' if sha else ''} from {root}"
 

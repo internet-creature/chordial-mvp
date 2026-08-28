@@ -429,10 +429,14 @@ def test_completed_block_is_presence_for_the_ladder(env):
     """a landed block also writes ONE user-authored action event: showing
     up by doing counts as showing up, so the outreach cadence resets for
     someone banking blocks all week without chatting. same savepoint as
-    the observation, so the source_event_uuid floor guards both."""
+    the observation, so the source_event_uuid floor guards both. the row
+    carries occurred_at - when the block LANDED - so an offline backlog
+    synced later reads as history, never as presence just now."""
+    landed = datetime(2026, 6, 10, 9, 0)
     pk, _ = _device_pk(env)
     _bank_event(env, U1, pk, 1, task_id=None, seconds=1620,
-                event_type="focus_block.completed", label="bounce stems")
+                event_type="focus_block.completed", label="bounce stems",
+                when=landed)
 
     assert focus_flow.process_pending(U1) == 1
     with env() as s:
@@ -443,6 +447,7 @@ def test_completed_block_is_presence_for_the_ladder(env):
         assert rows[0].message_type is None
         assert "bounce stems" in rows[0].content
         assert "27 min" in rows[0].content
+        assert rows[0].created_at == landed
         event = s.query(DeviceEvent).one()
         assert rows[0].event_metadata["source_event_uuid"] == event.event_uuid
 

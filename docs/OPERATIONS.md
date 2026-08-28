@@ -151,11 +151,15 @@ cross-repo iteration, no publish step. The cost is that the lockfile pins
 every dependency by hash *except* this one, so the seam has its own
 operating rules:
 
-- **Deploying is a two-repo pull.** The server needs both clones side by
-  side; after merging coupled work, `git pull` in **both** — a
-  chordial-only pull can import symbols its dainframe doesn't have yet
-  (loud, an `ImportError` at boot) or run against changed semantics
-  (quiet, worse).
+- **Deploying is a two-repo pull *plus the install*.** The server needs
+  both clones side by side; after merging coupled work, `git pull` in
+  **both** — a chordial-only pull can import symbols its dainframe
+  doesn't have yet (loud, an `ImportError` at boot) or run against
+  changed semantics (quiet, worse). Then `poetry install` in chordial
+  before restarting: pulling source updates neither the locked
+  third-party set (a release that adds a dependency fails at boot
+  without it) nor the installed dainframe metadata the startup stamp
+  reports — a pull-only deploy shows the new SHA beside a stale version.
 - **Merge order: dainframe first.** A chordial PR that leans on new
   dainframe API must land *after* its dainframe PR — chordial's main
   should never require a dainframe branch.

@@ -376,22 +376,22 @@ def test_provider_failure_after_tools_keeps_the_action_trail(db):
     assert 'create_task {"title": "w"} -> created' == events[1][2]
 
 
-def test_pulse_recency_clock_ignores_trailing_action_event(db):
-    """a tool action recorded after the reply must not reset the pulse's
-    recency clock: the check-in rhythm (and the backoff gate) anchor on
-    MESSAGE events only, so the newest thing on the clock is still the
-    scheduled reply."""
+def test_pulse_recency_clock_counts_action_events(db):
+    """action events are ON the recency clock now: a user banking a block
+    is presence and must restart the check-in beat like a reply (an agent
+    tool action trails its own reply by seconds, so counting it moves the
+    clock by nothing). system notes stay off the clock."""
     from src.managers.event_store_adapter import SqlEventStore
     from src.services.orchestration import chordial_visibility
-    from src.services.pulse_wiring import ANY_MESSAGE
+    from src.services.pulse_wiring import RECENT_ACTIVITY
 
     log = EventLog("u1")
     log.append_message("agent", "vel", "checking in~", message_type="scheduled",
                        platform="discord")
     log.append_action("vel", "create_task", {"title": "x"}, "created",
                       platform="discord")
+    log.append_note("user switched platforms", platform="discord")
 
     store = SqlEventStore("u1", visibility=chordial_visibility)
-    latest = run(store.latest(ANY_MESSAGE))
-    assert (latest.kind, latest.message_type) == ("message", "scheduled")
-    assert latest.author == "vel"
+    latest = run(store.latest(RECENT_ACTIVITY))
+    assert latest.kind == "action"  # the note never made the clock

@@ -143,6 +143,38 @@ All correctness checks pass at every scale tried, on both engines.
   legitimate devices behind one NAT ip (a classroom) need the window
   widened without a code change.
 
+## the seam (built)
+
+Chordial consumes [the-dainframe](https://github.com/internet-creature/the-dainframe)
+as a **path dependency** (`../the-dainframe`, `develop = true`) — instant
+cross-repo iteration, no publish step. The cost is that the lockfile pins
+every dependency by hash *except* this one, so the seam has its own
+operating rules:
+
+- **Deploying is a two-repo pull *plus the install*.** The server needs
+  both clones side by side; after merging coupled work, `git pull` in
+  **both** — a chordial-only pull can import symbols its dainframe
+  doesn't have yet (loud, an `ImportError` at boot) or run against
+  changed semantics (quiet, worse). Then `poetry install` in chordial
+  before restarting: pulling source updates neither the locked
+  third-party set (a release that adds a dependency fails at boot
+  without it) nor the installed dainframe metadata the startup stamp
+  reports — a pull-only deploy shows the new SHA beside a stale version.
+- **Merge order: dainframe first.** A chordial PR that leans on new
+  dainframe API must land *after* its dainframe PR — chordial's main
+  should never require a dainframe branch.
+- **Releases are tags.** The dainframe tags consumer-facing API changes
+  (`v0.1.0` = the cadence release); the tag annotation carries the
+  changelog. Version numbers name what prod runs — nothing is published
+  to an index.
+- **The process says what it's running.** The first startup log lines
+  include `dainframe <version> @ <sha> from <path>` — when prod behaves
+  oddly, read the combination off the log instead of asking both clones.
+- **CI tests the shipping pair.** Both repos run their suites in GitHub
+  Actions; chordial's workflow checks out the dainframe's **main**
+  beside it — the combination that ships, which a dev machine sitting
+  on feature branches structurally never tests.
+
 ## the gate (decision pending)
 
 macOS code-signing + notarization for the boxed app (the 7b deferral:

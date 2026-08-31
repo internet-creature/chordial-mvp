@@ -1,5 +1,9 @@
 import asyncio
+import importlib.metadata
 import logging
+import subprocess
+from pathlib import Path
+
 from config import Config
 from src.services.chat_service import ChatService
 from dainframe.loop.agent_loop import AgentLoop
@@ -194,9 +198,38 @@ async def _close_provider(provider):
             await result
 
 
+def _dainframe_stamp() -> str:
+    """which dainframe this process is actually running.
+
+    the dainframe is a path dependency (pyproject: "the extraction's
+    development seam"), so the lockfile pins every dependency by hash
+    *except* the one that changes most - the shipping combination is
+    only knowable if the process says it out loud. version comes from
+    the installed metadata; the sha from whatever the sibling clone is
+    sitting on (absent when it isn't a git checkout)."""
+    import dainframe
+
+    root = Path(dainframe.__file__).resolve().parent.parent
+    try:
+        version = importlib.metadata.version("dainframe")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        # SubprocessError covers TimeoutExpired: a hung git must degrade
+        # the stamp, never abort the boot
+        sha = ""
+    return f"dainframe {version}{f' @ {sha}' if sha else ''} from {root}"
+
+
 async def main():
     """main entry point for chordial"""
     logger.info("starting chordial...")
+    logger.info(_dainframe_stamp())
 
     # initialize database
     init_db()

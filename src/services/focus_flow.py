@@ -34,7 +34,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 
 from src.database.database import get_db
-from src.database.models import DeviceEvent, Observation
+from src.database.models import ConversationEvent, DeviceEvent, Observation
 from src.services import rewind_tether
 from src.utils.timezone_utils import utc_now
 
@@ -85,7 +85,11 @@ def process_pending(user_uuid: Optional[str] = None,
             try:
                 if row.event_type == "focus_block.completed":
                     with db.begin_nested():
+                        # one savepoint for both consequences: the
+                        # observation's unique source_event_uuid floor
+                        # guards the presence row too
                         db.add(_pip_noticing(row))
+                        db.add(_presence_event(row))
                 elif row.event_type in rewind_tether.FOLDED_TYPES:
                     # the tether's shadow rows (REWIND_DESIGN section 8):
                     # same claim discipline, so each event folds exactly once
@@ -130,6 +134,39 @@ def _pip_noticing(row: DeviceEvent) -> Observation:
             "occurred_at": (row.occurred_at.isoformat()
                             if row.occurred_at else None),
         },
+    )
+
+
+def _presence_event(row: DeviceEvent) -> ConversationEvent:
+    """the user showed up: a landed block is presence, recorded as a
+    user-authored ACTION event so the outreach cadence resets - the ladder
+    must not keep escalating at someone who is banking blocks all week
+    without chatting. written to the legacy per-user stream on purpose:
+    the pulse's gate reads user-WIDE (SqlUserEvents) so it counts there,
+    while room prompts replay only their own stream - pip's observation
+    stays the promptable noticing, and history stays byte-stable."""
+    payload = row.payload or {}
+    label = payload.get("label")
+    what = f'"{label}"' if isinstance(label, str) and label.strip() else \
+        "a focus block"
+    minutes = _minutes(_seconds(payload.get("run_seconds")))
+    # the row carries the moment the block LANDED, not the moment its sync
+    # was processed: a device background-syncing an offline backlog must
+    # read as history, never as "they showed up just now" - the gates and
+    # the recency clock order presence by this timestamp. clamped to now
+    # so a device clock running ahead can't park presence in the future.
+    happened = min(row.occurred_at or utc_now(), utc_now())
+    return ConversationEvent(
+        user_uuid=row.user_uuid,
+        stream_id=row.user_uuid,
+        platform="app",
+        author_type="user",
+        author="user",
+        kind="action",
+        content=f"landed {what} - {minutes} min",
+        message_type=None,
+        created_at=happened,
+        event_metadata={"source_event_uuid": row.event_uuid},
     )
 
 

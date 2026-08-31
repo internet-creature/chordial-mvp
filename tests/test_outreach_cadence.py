@@ -147,11 +147,12 @@ def test_set_preference_default_returns_to_the_house_schedule(db):
 # --- end-to-end: the composed gate holds an ignored chain --------------------
 
 
-def _seed(db, author_type, author, content, at, message_type="conversation"):
+def _seed(db, author_type, author, content, at, message_type="conversation",
+          kind="message"):
     with db() as s:
         s.add(ConversationEvent(
             user_uuid="u1", platform="discord", author_type=author_type,
-            author=author, kind="message", content=content,
+            author=author, kind=kind, content=content,
             message_type=message_type, created_at=naive(at),
         ))
         s.commit()
@@ -208,6 +209,46 @@ def test_a_reply_resets_the_ladder_and_the_checkin_flows(db):
           message_type="scheduled")
     _seed(db, "user", "user", "sorry, busy day!", NOW - timedelta(hours=2))
     assert _tick(db) == [("discord", "42", "checking in~")]
+
+
+def test_banking_a_block_resets_the_ladder_like_a_reply(db):
+    """presence is not just speech: the wiring widens presence_kinds to
+    actions, so the user-authored action event a landed block writes
+    (focus_flow) resets the ladder exactly as a reply would - the chain
+    must not keep escalating at someone who is banking blocks daily."""
+    _seed(db, "user", "user", "hi", NOW - timedelta(days=2))
+    _seed(db, "agent", "vel", "checking in~", NOW - timedelta(hours=3),
+          message_type="scheduled")
+    _seed(db, "user", "user", 'landed "essay" - 27 min',
+          NOW - timedelta(hours=2), message_type=None, kind="action")
+    assert _tick(db) == [("discord", "42", "checking in~")]
+
+
+def test_fresh_presence_restarts_the_checkin_clock(db):
+    """sol's repro: presence that clears the ladder must ALSO restart the
+    beat's recency clock - otherwise a long-overdue beat fires minutes
+    after the user banks a block, which is outreach at someone who is
+    demonstrably right here. the rhythm anchors on activity, not just
+    messages, so the five-minute-old action holds the beat."""
+    _seed(db, "user", "user", "hi", NOW - timedelta(days=2))
+    _seed(db, "agent", "vel", "checking in~", NOW - timedelta(hours=3),
+          message_type="scheduled")
+    _seed(db, "user", "user", 'landed "essay" - 27 min',
+          NOW - timedelta(minutes=5), message_type=None, kind="action")
+    assert _tick(db) == []
+
+
+def test_backfilled_presence_neither_resets_nor_wakes_anything(db):
+    """an offline device syncing a days-old block writes the action with
+    its honest occurred_at: inserted AFTER the unanswered outreach but
+    timestamped before it, it must not reset the chain - the user is
+    still gone, whatever the sync queue just delivered."""
+    _seed(db, "user", "user", "hi", NOW - timedelta(days=2))
+    _seed(db, "agent", "vel", "checking in~", NOW - timedelta(hours=3),
+          message_type="scheduled")
+    _seed(db, "user", "user", 'landed "essay" - 27 min',
+          NOW - timedelta(days=3), message_type=None, kind="action")
+    assert _tick(db) == []
 
 
 def test_a_reply_wakes_a_persisted_denial_within_the_bound(db):

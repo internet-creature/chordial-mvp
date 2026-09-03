@@ -94,17 +94,39 @@ export function saveFormPosition(
   }
 }
 
-/** where the bar goes the first time, given where the den was: along
- * the den's bottom edge, so the strip appears where the deer's feet
- * were instead of jumping to the den's top-left */
+export interface Rect extends Point, Size {}
+
+/** where the bar goes the first time, given where the den was: the bar
+ * is WIDER than the den, so it keeps the den's RIGHT edge (a den placed
+ * against the right of the screen would otherwise push the bar's
+ * controls off it) and sits along the den's bottom edge, so the strip
+ * appears where the deer's feet were. never above or left of the origin. */
 export function barPositionFrom(den: Point, denSize: Size, barSize: Size): Point {
-  return { x: den.x, y: Math.max(0, den.y + denSize.height - barSize.height) };
+  return {
+    x: Math.max(0, den.x + denSize.width - barSize.width),
+    y: Math.max(0, den.y + denSize.height - barSize.height),
+  };
 }
 
-/** the inverse: the den grows upward from the bar's bottom edge, never
- * above the top of the screen */
+/** the inverse: the den grows back up and in from the bar's bottom-right
+ * corner, never above or left of the origin */
 export function denPositionFrom(bar: Point, denSize: Size, barSize: Size): Point {
-  return { x: bar.x, y: Math.max(0, bar.y + barSize.height - denSize.height) };
+  return {
+    x: Math.max(0, bar.x + barSize.width - denSize.width),
+    y: Math.max(0, bar.y + barSize.height - denSize.height),
+  };
+}
+
+/** keep a window of `size` inside `area` (the monitor's work area): a
+ * remembered or derived place must never leave controls off-screen. a
+ * window larger than the area pins to the area's origin. */
+export function clampToArea(point: Point, size: Size, area: Rect): Point {
+  const maxX = area.x + area.width - size.width;
+  const maxY = area.y + area.height - size.height;
+  return {
+    x: Math.min(Math.max(point.x, area.x), Math.max(area.x, maxX)),
+    y: Math.min(Math.max(point.y, area.y), Math.max(area.y, maxY)),
+  };
 }
 
 /** the last target chosen for a task (this session), else the fallback */

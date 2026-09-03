@@ -4,11 +4,12 @@
 // the stored per-form places must survive a monitor change of scale.
 
 import {
+  currentMonitor,
   getCurrentWindow,
   LogicalPosition,
   LogicalSize,
 } from "@tauri-apps/api/window";
-import type { Point, Size } from "./companion";
+import type { Point, Rect, Size } from "./companion";
 
 export function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -52,4 +53,21 @@ export async function windowPosition(): Promise<Point | null> {
   ]);
   const logical = physical.toLogical(scale);
   return { x: Math.round(logical.x), y: Math.round(logical.y) };
+}
+
+/** the work area (screen minus menu bar / dock / taskbar) of the monitor
+ * the window is on, in logical pixels; null outside tauri or when the
+ * monitor can't be told */
+export async function workArea(): Promise<Rect | null> {
+  if (!inTauri()) return null;
+  const monitor = await currentMonitor();
+  if (!monitor) return null;
+  const pos = monitor.workArea.position.toLogical(monitor.scaleFactor);
+  const size = monitor.workArea.size.toLogical(monitor.scaleFactor);
+  return {
+    x: Math.round(pos.x),
+    y: Math.round(pos.y),
+    width: Math.round(size.width),
+    height: Math.round(size.height),
+  };
 }

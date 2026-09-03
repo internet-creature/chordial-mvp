@@ -24,6 +24,7 @@ import type { DoneTaskRow, TaskRow, TodayPayload } from "../api/types";
 import {
   autoBarEnabled,
   barPositionFrom,
+  clampToArea,
   denPositionFrom,
   FORM_SIZES,
   formFor,
@@ -36,6 +37,7 @@ import {
   setAutoBar,
   targetChoices,
   type Form,
+  type Point,
 } from "../lib/companion";
 import {
   addPendingDone,
@@ -63,6 +65,7 @@ import {
   resizeWindow,
   setAlwaysOnTop,
   windowPosition,
+  workArea,
 } from "../lib/tauriWindow";
 import Confetti from "./Confetti";
 import InlineContent from "./InlineContent";
@@ -310,22 +313,33 @@ export default function DeerWindow() {
   // mount the den size is enforced - the window-state plugin restores
   // whatever rect was current at exit, bar included - and the den is
   // moved only when the exit was in bar form (otherwise the plugin's
-  // restore is the freshest place). serialised through a promise chain
-  // so a quick flip-back never interleaves two resizes.
+  // restore is the freshest place). every destination is clamped into
+  // the monitor's work area: the bar is wider than the den, and a
+  // remembered place may belong to a screen that's gone. serialised
+  // through a promise chain so a quick flip-back never interleaves two
+  // resizes.
   useEffect(() => {
     geometry.current = geometry.current
       .then(async () => {
         const prev = wornForm.current;
         if (prev === form) return;
+        const settle = async (target: Point | null) => {
+          const area = await workArea();
+          return target && area
+            ? clampToArea(target, FORM_SIZES[form], area)
+            : target;
+        };
         if (prev === null) {
           const exitedIn = loadLastForm(window.localStorage);
           await resizeWindow(FORM_SIZES[form]);
           if (exitedIn === "bar" && form === "den") {
             const here = await windowPosition();
-            const target =
+            const target = await settle(
               loadFormPosition(window.localStorage, "den") ??
-              (here ? denPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar)
-                    : null);
+                (here
+                  ? denPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar)
+                  : null),
+            );
             if (target) await moveWindow(target);
           }
         } else {
@@ -338,6 +352,7 @@ export default function DeerWindow() {
                 ? barPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar)
                 : denPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar);
           }
+          target = await settle(target);
           await resizeWindow(FORM_SIZES[form]);
           if (target) await moveWindow(target);
         }
@@ -1036,6 +1051,14 @@ export default function DeerWindow() {
                     aria-expanded={selected}
                     onClick={() => selectTask(task)}
                     onKeyDown={(e) => {
+                      // escape closes the row from anywhere inside it -
+                      // a chip or the start button included
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setSelectedId(null);
+                        e.currentTarget.focus();
+                        return;
+                      }
                       // the row's own keys only - an inner button's Enter
                       // already clicked it and must not start twice
                       if (e.target !== e.currentTarget) return;
@@ -1046,8 +1069,6 @@ export default function DeerWindow() {
                         } else {
                           selectTask(task);
                         }
-                      } else if (e.key === "Escape") {
-                        setSelectedId(null);
                       }
                     }}
                   >

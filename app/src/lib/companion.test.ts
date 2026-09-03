@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   autoBarEnabled,
   barPositionFrom,
+  clampToArea,
   denPositionFrom,
   FORM_SIZES,
   formFor,
@@ -61,18 +62,40 @@ describe("per-form positions", () => {
     expect(loadFormPosition(s, "den")).toBeNull();
   });
 
-  it("the bar lands along the den's bottom edge, and the den grows back up", () => {
-    const den = { x: 100, y: 300 };
+  it("the bar keeps the den's right and bottom edges, and the den grows back", () => {
+    // a den placed 16px from the right of a 1440-wide screen: the wider
+    // bar must not run off the right edge (sol's #84 round)
+    const den = { x: 1440 - 270 - 16, y: 300 };
     const bar = barPositionFrom(den, FORM_SIZES.den, FORM_SIZES.bar);
-    expect(bar).toEqual({ x: 100, y: 300 + 500 - 56 });
+    expect(bar).toEqual({ x: 1440 - 440 - 16, y: 300 + 500 - 56 });
+    expect(bar.x + FORM_SIZES.bar.width).toBe(den.x + FORM_SIZES.den.width);
     expect(denPositionFrom(bar, FORM_SIZES.den, FORM_SIZES.bar)).toEqual(den);
   });
 
-  it("never places a form above the top of the screen", () => {
+  it("never places a form above or left of the origin", () => {
     expect(denPositionFrom({ x: 0, y: 20 }, FORM_SIZES.den, FORM_SIZES.bar).y).toBe(0);
+    expect(barPositionFrom({ x: 10, y: 0 }, FORM_SIZES.den, FORM_SIZES.bar).x).toBe(0);
     expect(
-      barPositionFrom({ x: 0, y: 0 }, { width: 10, height: 10 }, FORM_SIZES.bar).y,
-    ).toBe(0);
+      barPositionFrom({ x: 0, y: 0 }, { width: 10, height: 10 }, FORM_SIZES.bar),
+    ).toEqual({ x: 0, y: 0 });
+  });
+
+  it("clamps a window into the work area", () => {
+    const area = { x: 0, y: 25, width: 1440, height: 875 };
+    // off the right edge and below the bottom: pulled back in
+    expect(clampToArea({ x: 1300, y: 900 }, FORM_SIZES.bar, area)).toEqual({
+      x: 1000,
+      y: 844,
+    });
+    // above the menu bar: pushed down to the area's top
+    expect(clampToArea({ x: 40, y: 0 }, FORM_SIZES.den, area)).toEqual({ x: 40, y: 25 });
+    // already inside: untouched
+    expect(clampToArea({ x: 40, y: 100 }, FORM_SIZES.den, area)).toEqual({ x: 40, y: 100 });
+    // a window larger than the area pins to the origin instead of NaN-ing
+    expect(clampToArea({ x: 5, y: 5 }, { width: 2000, height: 2000 }, area)).toEqual({
+      x: 0,
+      y: 25,
+    });
   });
 });
 

@@ -54,6 +54,9 @@ COMPANION_CONTROLS = [
     "core:window:allow-set-position",
     "core:window:allow-outer-position",
     "core:window:allow-scale-factor",
+    # the form switch clamps every destination into the monitor's work
+    # area - the bar is wider than the den (sol's #84 round)
+    "core:window:allow-current-monitor",
 ]
 
 

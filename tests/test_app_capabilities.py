@@ -38,3 +38,26 @@ def test_capability_covers_both_windows_only():
     # the capability is scoped to exactly the two windows the shell opens;
     # a new window label must opt in deliberately
     assert sorted(_capability()["windows"]) == ["deer", "main"]
+
+
+# the companion window's own controls (docs/FOCUS_DOGFOOD_DESIGN.md §11.2):
+# minimize and close both HIDE (the clock is the sidecar's), always-on-top
+# is a toggle, and the den <-> bar form switch resizes and moves the window
+# from the webview. every one of these is a separate permission that
+# core:default leaves out, and tauri refuses each silently.
+COMPANION_CONTROLS = [
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-is-always-on-top",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-scale-factor",
+]
+
+
+def test_companion_window_controls_are_permitted():
+    perms = _capability()["permissions"]
+    missing = [p for p in COMPANION_CONTROLS if p not in perms]
+    assert not missing, f"companion controls would be silently inert: {missing}"

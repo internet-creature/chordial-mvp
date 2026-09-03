@@ -52,7 +52,7 @@ pub fn run() {
             // the tray: chordial lives in the corner of the day, so the
             // deer can be tucked away and called back without the dock
             let toggle = MenuItem::with_id(
-                app, "toggle-deer", "show / hide the deer", true,
+                app, "toggle-deer", "show / hide the companion", true,
                 None::<&str>,
             )?;
             let check = MenuItem::with_id(

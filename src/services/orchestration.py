@@ -347,6 +347,18 @@ class ChordialContext:
         else:
             briefing_kind = "user_message"
 
+        # the day's beat picks the posture (docs/FOCUS_DOGFOOD_DESIGN.md
+        # §13.3): the morning brief points at ONE first thing when the day
+        # has one, asks for the day's shape when it doesn't. chosen here,
+        # deterministically, so the prompt only renders it. the plain
+        # check-in carries no posture and keeps its exact bytes.
+        posture_extras: dict = {}
+        if stimulus.extras.get("beat") == "morning":
+            posture, first_thing = await asyncio.to_thread(
+                self._morning_posture, user_uuid)
+            posture_extras = {"checkin_posture": posture,
+                              "first_thing": first_thing}
+
         return BriefingContext(
             kind=briefing_kind,
             # an introduction stays light (no agenda digest) but must still
@@ -363,8 +375,36 @@ class ChordialContext:
                 "user_name": user_name,
                 "user_timezone": user_timezone or "UTC",
                 "user_pronouns": user_pronouns,
+                **posture_extras,
             },
         )
+
+    def _morning_posture(self, user_uuid: str) -> tuple:
+        """(posture, first_thing) for the brief. pure db reads, guarded:
+        any failure is the open posture (ask about the day) rather than a
+        broken morning. the agenda payload gives today's and carried-over
+        tasks; the active cycle's open commitments are the fallback."""
+        from src.services.beats import morning_posture, pick_first_thing
+
+        payload = None
+        commitments: list = []
+        try:
+            if self.agenda_service is not None:
+                payload = self.agenda_service.get_payload(user_uuid)
+        except Exception:
+            logger.exception("agenda read failed for the brief; open posture")
+        try:
+            from src.services.cycles import CycleStore
+            from src.services.workspace import get_store
+
+            active = get_store().active_cycle(user_uuid)
+            if active:
+                commitments = CycleStore().list_commitments(
+                    user_uuid, cycle_id=active["id"], include_closed=False)
+        except Exception:
+            logger.exception("cycle read failed for the brief; tasks only")
+        first_thing = pick_first_thing(payload, commitments)
+        return morning_posture(first_thing), first_thing
 
     def _compose_ambient(self, user_uuid: str,
                          stream_id: Optional[str] = None,

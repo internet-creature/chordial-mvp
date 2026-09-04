@@ -209,6 +209,19 @@ class Config:
     # a denied tick costs zero tokens.
     OUTREACH_CADENCE = os.getenv("OUTREACH_CADENCE", "1d x3, 1w x3, 60d @ 8-11")
 
+    # the day's beats (docs/FOCUS_DOGFOOD_DESIGN.md §13): the morning brief
+    # is a calendar beat at a local time (per-user override in
+    # schedule_preferences["morning_time"]; "off" disables it), sent only
+    # to people seen within MORNING_RECENCY_DAYS - beyond that the cadence
+    # ladder owns them. PROACTIVE_DAILY_CAP bounds every proactive beat per
+    # user-local day (brief + one follow-through today; +1 when the evening
+    # settle lands), and no two proactive sends land within
+    # PROACTIVE_MIN_GAP_HOURS of each other.
+    MORNING_BRIEF_TIME = os.getenv("MORNING_BRIEF_TIME", "08:30")
+    MORNING_RECENCY_DAYS = int(os.getenv("MORNING_RECENCY_DAYS", "4"))
+    PROACTIVE_DAILY_CAP = int(os.getenv("PROACTIVE_DAILY_CAP", "2"))
+    PROACTIVE_MIN_GAP_HOURS = float(os.getenv("PROACTIVE_MIN_GAP_HOURS", "3"))
+
     # compressor (legacy per-message compression; off by default in favor of
     # full-history context, which is both simpler and cache-friendly)
     ENABLE_COMPRESSION = os.getenv("ENABLE_COMPRESSION", "false").lower() == "true"

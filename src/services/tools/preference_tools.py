@@ -11,6 +11,9 @@ import pytz
 
 from dainframe.pulse import Cadence
 
+from config import Config
+from src.services.beats import canonical_morning_time, morning_time_allowed
+
 from src.managers.user_manager import UserManager
 from src.utils.timezone_utils import canonicalize_timezone
 from dainframe.providers.types import ToolDef
@@ -103,6 +106,32 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
             schedule_updates["outreach_cadence"] = str(parsed)
             notes.append(f"hold unanswered check-ins to '{parsed}'")
 
+    morning = tool_input.get("morning_time")
+    if morning:
+        morning = morning.strip()
+        if morning.lower() == "default":
+            schedule_updates["morning_time"] = None
+            notes.append("send the morning brief at the usual time again")
+        elif morning.lower() == "off":
+            schedule_updates["morning_time"] = "off"
+            notes.append("stop sending the morning brief")
+        else:
+            try:
+                canonical = canonical_morning_time(morning)
+            except ValueError as err:
+                return f"that time didn't parse ({err}). or 'off', or 'default'."
+            if not morning_time_allowed(
+                    canonical, Config.QUIET_HOURS_START, Config.QUIET_HOURS_END):
+                return (
+                    f"{canonical} is inside quiet hours "
+                    f"({Config.QUIET_HOURS_START:02d}:00-"
+                    f"{Config.QUIET_HOURS_END:02d}:00), when nothing is "
+                    f"sent. pick a time from {Config.QUIET_HOURS_END:02d}:00 "
+                    "on, or 'off'."
+                )
+            schedule_updates["morning_time"] = canonical
+            notes.append(f"send the morning brief at {canonical}")
+
     if not updates and not schedule_updates:
         return "no recognized preferences to update."
 
@@ -128,7 +157,9 @@ SET_PREFERENCE = Tool(
             "quiet and unresolved - only set it when they explicitly ask for "
             "that. outreach_cadence pins how often you may check in when "
             "they've gone quiet - only set it when they explicitly ask to "
-            "hear from you more or less often."
+            "hear from you more or less often. morning_time moves (or turns "
+            "off) the morning brief - the short opener you send at the start "
+            "of their day."
         ),
         input_schema={
             "type": "object",
@@ -178,6 +209,15 @@ SET_PREFERENCE = Tool(
                         "(daily for a few days, weekly for a few weeks, then "
                         "every couple of months). Replying normally speeds "
                         "things back up unless they've pinned it like this."
+                    ),
+                },
+                "morning_time": {
+                    "type": "string",
+                    "description": (
+                        "When the morning brief should land, as a local "
+                        "24-hour time like '08:30' - outside quiet hours "
+                        "(nothing sends before 08:00 by default); 'off' turns "
+                        "the brief off; 'default' returns to the house time."
                     ),
                 },
             },

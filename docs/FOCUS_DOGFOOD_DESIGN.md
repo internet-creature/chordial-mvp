@@ -468,6 +468,16 @@ same — the "presence within N days" and "N per local day" shapes are generic):
   user-local day, and no two beats within 3h. Counts agent messages with
   `message_type="scheduled"` since local midnight.
 
+- **MorningSlotGate** (follow-through only): the check-in holds until the brief's slot has
+  passed (the user's morning time plus the calendar's one-hour grace). Found in review: a
+  reply the previous evening with nothing unanswered makes the check-in due the minute
+  quiet hours end, and a check-in at 08:00 would cap the 08:30 brief out of its grace on
+  the commonest morning of all. Users with the brief off are never held.
+- **A morning time must lie outside quiet hours.** The quiet-hours gate governs every beat,
+  so a 07:15 brief under 21–08 would be delayed to 08:00 and an earlier one skipped. The
+  preference tool refuses such times; a stored one that quiet hours can no longer honor
+  falls back to the house time.
+
 **The ladder governs the follow-through, not the brief** (found while building: the
 ladder's rungs are 24-hour waits, so a check-in at 21:55 plus "1d" lands at 21:55 and
 snaps past the morning window — under the ladder the brief would skip a day after any

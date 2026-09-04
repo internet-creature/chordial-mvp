@@ -38,9 +38,11 @@ from src.services.beats import (  # noqa: E402
     AlreadyTalkedTodayGate,
     DayCapGate,
     ForBeats,
+    MorningSlotGate,
     RecencyGate,
     morning_cron,
     morning_posture,
+    morning_time_allowed,
     parse_morning_time,
     pick_first_thing,
 )
@@ -192,6 +194,34 @@ def test_morning_time_preference_reads_canonical_off_and_default(db):
     assert beats.morning_time_of("u1", "08:30") == "08:30"
     run(users.merge_schedule_preferences("u1", {"morning_time": None}))
     assert beats.morning_time_of("u1", "08:30") == "08:30"
+    # a stored time quiet hours can't honor falls back to the house time
+    run(users.merge_schedule_preferences("u1", {"morning_time": "07:15"}))
+    assert beats.morning_time_of("u1", "08:30", quiet_hours=(21, 8)) == "08:30"
+    assert beats.morning_time_of("u1", "08:30", quiet_hours=(21, 7)) == "07:15"
+
+
+def test_morning_time_must_lie_outside_quiet_hours():
+    assert morning_time_allowed("08:00", 21, 8)
+    assert morning_time_allowed("08:30", 21, 8)
+    assert not morning_time_allowed("07:59", 21, 8)
+    assert not morning_time_allowed("23:00", 21, 8)
+    # non-wrapping quiet hours too
+    assert not morning_time_allowed("03:00", 1, 6)
+    assert morning_time_allowed("06:00", 1, 6)
+
+
+def test_the_preference_tool_refuses_a_quiet_hours_time(db):
+    from dainframe.tools.context import ToolContext
+    from src.services.tools.preference_tools import SET_PREFERENCE
+
+    ctx = ToolContext(stream_id="u1", activation_id="a1", actor="vel",
+                      metadata={"user_id": "u1"})
+    reply = run(SET_PREFERENCE.handler({"morning_time": "07:15"}, ctx))
+    assert "inside quiet hours" in reply
+    assert beats.morning_time_of("u1", "08:30") == "08:30"
+    reply = run(SET_PREFERENCE.handler({"morning_time": "9:00"}, ctx))
+    assert "09:00" in reply
+    assert beats.morning_time_of("u1", "08:30") == "09:00"
 
 
 def test_every_plan_and_stimulus_names_its_beat(db):
@@ -269,6 +299,27 @@ def test_day_cap_gate_bounds_the_day_and_spaces_the_sends(db):
         conversation.check(plan_for("checkin"), reader(), NOW)).reason
 
 
+def test_morning_slot_gate_holds_the_followthrough_until_the_slot_passes(db):
+    gate = MorningSlotGate(lambda u: "08:30", TZ)
+    # 08:00 local: the brief's slot is ahead - hold until 09:30 local
+    verdict = run(gate.check(plan_for("checkin"), reader(), local(8, 0)))
+    assert not verdict.allowed and verdict.retry_at == local(9, 30)
+    # 09:29: still inside the grace
+    assert not run(gate.check(plan_for("checkin"), reader(), local(9, 29))).allowed
+    # 09:30 and after: clear
+    assert run(gate.check(plan_for("checkin"), reader(), local(9, 30))).allowed
+    assert run(gate.check(plan_for("checkin"), reader(), local(15, 0))).allowed
+    # the brief off: never held
+    off = MorningSlotGate(lambda u: None, TZ)
+    assert run(off.check(plan_for("checkin"), reader(), local(8, 0))).allowed
+
+    # an unreadable preference costs the hold, never the check-in
+    def boom(_):
+        raise RuntimeError("db hiccup")
+    assert run(MorningSlotGate(boom, TZ).check(
+        plan_for("checkin"), reader(), local(8, 0))).allowed
+
+
 def test_for_beats_scopes_a_gate_to_its_beats():
     class Deny:
         async def check(self, firing, events, now):
@@ -304,7 +355,9 @@ def test_first_thing_is_carried_over_then_priority_then_commitment():
     ]
     assert pick_first_thing(payload, commitments) == \
         "portfolio - outline section two"
-    assert pick_first_thing(payload, commitments[:2]) == "no action"
+    # a commitment without a next action is not a small block anyone can
+    # start: nothing to point at, the brief asks instead
+    assert pick_first_thing(payload, commitments[:2]) is None
     assert pick_first_thing(payload, []) is None
     assert pick_first_thing(None) is None
     assert morning_posture("x") == "morning_first"
@@ -400,6 +453,30 @@ def test_an_unanswered_evening_checkin_still_gets_a_brief_next_morning(db):
 
     # and once is once: the same morning never fires twice
     clock["now"] = NOW + timedelta(minutes=10)
+    run(pulse.tick())
+    assert len(deliver.calls) == 1
+
+
+def test_an_evening_reply_never_lets_the_checkin_cap_the_brief(db):
+    """sol's #85 round: a reply the previous evening, nothing unanswered.
+    the check-in comes due the minute quiet hours end; at 08:00 it must
+    hold for the brief's slot, or the 08:30 brief is capped out of its
+    grace and the morning is skipped."""
+    seed(db, "user", "user", "night!", local(20, 0, days=-1))
+    clock = {"now": local(8, 0)}
+    pulse, companion, deliver = make_pulse(db, clock)
+
+    run(pulse.tick())
+    assert deliver.calls == [], "the 08:00 check-in must wait for the brief"
+
+    clock["now"] = NOW
+    run(pulse.tick())
+    assert len(deliver.calls) == 1
+    assert companion.briefings[-1].extras["beat"] == "morning"
+
+    # the slot passes: the check-in is next in line, but the brief it
+    # follows is unanswered (the ladder) and too recent (the cap)
+    clock["now"] = local(9, 31)
     run(pulse.tick())
     assert len(deliver.calls) == 1
 

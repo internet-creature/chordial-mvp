@@ -11,7 +11,8 @@ import pytz
 
 from dainframe.pulse import Cadence
 
-from src.services.beats import canonical_morning_time
+from config import Config
+from src.services.beats import canonical_morning_time, morning_time_allowed
 
 from src.managers.user_manager import UserManager
 from src.utils.timezone_utils import canonicalize_timezone
@@ -119,6 +120,15 @@ async def _set_preference(tool_input: dict, context: ToolContext) -> str:
                 canonical = canonical_morning_time(morning)
             except ValueError as err:
                 return f"that time didn't parse ({err}). or 'off', or 'default'."
+            if not morning_time_allowed(
+                    canonical, Config.QUIET_HOURS_START, Config.QUIET_HOURS_END):
+                return (
+                    f"{canonical} is inside quiet hours "
+                    f"({Config.QUIET_HOURS_START:02d}:00-"
+                    f"{Config.QUIET_HOURS_END:02d}:00), when nothing is "
+                    f"sent. pick a time from {Config.QUIET_HOURS_END:02d}:00 "
+                    "on, or 'off'."
+                )
             schedule_updates["morning_time"] = canonical
             notes.append(f"send the morning brief at {canonical}")
 
@@ -205,8 +215,9 @@ SET_PREFERENCE = Tool(
                     "type": "string",
                     "description": (
                         "When the morning brief should land, as a local "
-                        "24-hour time like '08:30'; 'off' turns the brief "
-                        "off; 'default' returns to the house time."
+                        "24-hour time like '08:30' - outside quiet hours "
+                        "(nothing sends before 08:00 by default); 'off' turns "
+                        "the brief off; 'default' returns to the house time."
                     ),
                 },
             },

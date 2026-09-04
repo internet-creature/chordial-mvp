@@ -21,6 +21,19 @@ user-local time), the existing check-in as the day's follow-through, and
   instead of arriving as a second message.
 - DayCapGate: at most N proactive sends per user-local day, and no two
   within a few hours - applies to every beat.
+- MorningSlotGate: the follow-through waits for the brief's slot. the
+  check-in interval can come due the minute quiet hours end (a reply the
+  previous evening, nothing unanswered), and a check-in at 08:00 would
+  cap the 08:30 brief out of its one-hour grace - the morning would be
+  skipped in the commonest case of all. so the check-in holds until the
+  morning occurrence has had its slot (the brief's time plus the
+  calendar grace); after that the day cap's spacing takes over.
+
+a chosen morning time must lie OUTSIDE quiet hours: the quiet-hours gate
+governs every beat, so a 07:15 brief under 21-08 quiet hours would be
+delayed to 08:00, and an earlier one would age past the calendar's
+grace and be skipped. the preference tool refuses such times; a stored
+one (an older row, a changed QUIET_HOURS) falls back to the house time.
 
 all arithmetic reads the user-wide event reader the pulse already hands
 every gate; chordial rows are naive utc, normalized through as_utc.
@@ -81,11 +94,30 @@ def canonical_morning_time(value: str) -> str:
     return f"{hour:02d}:{minute:02d}"
 
 
-def morning_time_of(user_uuid: str, default: str) -> Optional[str]:
+def in_quiet_hours(hour: int, start: int, end: int) -> bool:
+    """the quiet-hours gate's own arithmetic (dainframe QuietHoursGate):
+    start > end wraps midnight (21 -> 8)."""
+    if start > end:
+        return hour >= start or hour < end
+    return start <= hour < end
+
+
+def morning_time_allowed(value: str, quiet_start: int, quiet_end: int) -> bool:
+    """can the quiet-hours gate honor a brief at this local time? the
+    brief's whole minute must be outside quiet hours: 08:00 under 21-08
+    is fine (the gate wakes at the hour), 07:59 is not."""
+    hour, _minute = parse_morning_time(value)
+    return not in_quiet_hours(hour, quiet_start, quiet_end)
+
+
+def morning_time_of(user_uuid: str, default: str,
+                    quiet_hours: Optional[tuple[int, int]] = None
+                    ) -> Optional[str]:
     """the user's brief time: schedule_preferences["morning_time"] as a
     canonical 'HH:MM', the house default when unset, None when "off". a
-    stored value that no longer parses costs the override, never the
-    brief. sync - the source runs it off-loop like the taper's read."""
+    stored value that no longer parses - or one quiet hours can no longer
+    honor - costs the override, never the brief. sync - the source runs
+    it off-loop like the taper's read."""
     from src.database.database import get_db
     from src.database.models import User
 
@@ -98,11 +130,18 @@ def morning_time_of(user_uuid: str, default: str) -> Optional[str]:
     if value.strip().lower() == "off":
         return None
     try:
-        return canonical_morning_time(value)
+        canonical = canonical_morning_time(value)
     except ValueError:
         logger.warning("stored morning_time %r for %s no longer parses; "
                        "house default", value, user_uuid)
         return default
+    if quiet_hours is not None and not morning_time_allowed(
+            canonical, *quiet_hours):
+        logger.warning("stored morning_time %r for %s lies inside quiet "
+                       "hours %s-%s; house default", value, user_uuid,
+                       *quiet_hours)
+        return default
+    return canonical
 
 
 # --- gates -------------------------------------------------------------------
@@ -234,6 +273,45 @@ class DayCapGate:
         return GateDecision(True, "clear")
 
 
+class MorningSlotGate:
+    """the follow-through waits for the brief's slot: denied while the
+    user's local time is before their morning time plus the calendar's
+    grace (the window in which the brief can still fire), so a check-in
+    coming due at the end of quiet hours never caps the brief out of its
+    own morning. users with the brief off are never held. after the slot
+    the day cap's spacing governs, as before."""
+
+    def __init__(self, morning_time_of: Callable[[str], Optional[str]],
+                 tz_of: Callable[[str], Awaitable[str]],
+                 grace: timedelta = timedelta(hours=1)):
+        self.morning_time_of = morning_time_of   # sync, run off-loop
+        self.tz_of = tz_of
+        self.grace = grace
+
+    async def check(self, firing: FiringPlan, events, now) -> GateDecision:
+        try:
+            morning = await asyncio.to_thread(
+                self.morning_time_of, firing.key.stream_id)
+        except Exception:
+            logger.exception("morning time read failed for %s; the "
+                             "follow-through is not held", firing.key.stream_id)
+            return GateDecision(True, "morning time unreadable")
+        if morning is None:
+            return GateDecision(True, "no morning beat")
+        zone = await _local_zone(self.tz_of, firing.key.stream_id)
+        if zone is None:
+            return GateDecision(False, "unresolvable timezone (fail closed)")
+        hour, minute = parse_morning_time(morning)
+        local = now.astimezone(zone)
+        slot_end = local.replace(hour=hour, minute=minute, second=0,
+                                 microsecond=0) + self.grace
+        if local < slot_end:
+            return GateDecision(
+                False, f"the morning brief's slot ({morning}) comes first",
+                retry_at=slot_end.astimezone(now.tzinfo))
+        return GateDecision(True, "clear")
+
+
 # --- the brief's posture -----------------------------------------------------
 
 POSTURE_MORNING_FIRST = "morning_first"
@@ -246,8 +324,9 @@ def pick_first_thing(payload: Optional[dict],
                      commitments: Iterable[dict] = ()) -> Optional[str]:
     """the ONE thing the brief points at, deterministically: the oldest
     carried-over task, else the highest-priority task planned today, else
-    the first open cycle commitment that has a next action (rendered as
-    'title - next action'). None = nothing planned, ask instead."""
+    the first open cycle commitment that HAS a next action (rendered as
+    'title - next action'). a commitment without one is not a small
+    block anyone can start - None, and the brief asks instead."""
     if payload:
         overdue = payload.get("tasks_overdue") or []
         if overdue:
@@ -261,9 +340,6 @@ def pick_first_thing(payload: Optional[dict],
     for c in commitments:
         if c.get("status") in (None, "active", "open") and c.get("next_action"):
             return f'{c.get("title")} - {c["next_action"]}'
-    for c in commitments:
-        if c.get("status") in (None, "active", "open") and c.get("title"):
-            return c["title"]
     return None
 
 

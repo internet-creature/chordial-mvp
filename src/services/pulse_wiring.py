@@ -58,6 +58,7 @@ from src.services.beats import (
     AlreadyTalkedTodayGate,
     DayCapGate,
     ForBeats,
+    MorningSlotGate,
     RecencyGate,
     morning_cron,
 )
@@ -448,6 +449,12 @@ def build_pulse(
     ChordialStimulusFactory."""
     from src.services import taper
     tz_of = user_manager.get_user_timezone
+
+    def morning_time(user_uuid: str) -> Optional[str]:
+        return beats.morning_time_of(
+            user_uuid, Config.MORNING_BRIEF_TIME,
+            quiet_hours=(Config.QUIET_HOURS_START, Config.QUIET_HOURS_END))
+
     gates = [
         ScheduledOnly(OnboardingGate(user_manager)),
         ScheduledOnly(QuietHoursGate(
@@ -462,6 +469,11 @@ def build_pulse(
                                {MORNING_RHYTHM})),
         ScheduledOnly(ForBeats(AlreadyTalkedTodayGate(tz_of),
                                {MORNING_RHYTHM})),
+        # the follow-through waits for the brief's slot (sol's #85 round):
+        # a check-in due the minute quiet hours end would otherwise cap
+        # the 08:30 brief out of its grace on the commonest morning
+        ScheduledOnly(ForBeats(MorningSlotGate(morning_time, tz_of),
+                               {CHECKIN_RHYTHM})),
         # the day's cap: every beat counts, none within a few hours of
         # another - the brief, being first, always fits under it
         ScheduledOnly(DayCapGate(
@@ -498,8 +510,7 @@ def build_pulse(
         source=ChordialPulseSource(
             user_manager, curator=curator,
             checkin_minutes=taper.checkin_minutes,
-            morning_time=lambda uid: beats.morning_time_of(
-                uid, Config.MORNING_BRIEF_TIME),
+            morning_time=morning_time,
         ),
         factory=ChordialStimulusFactory(user_manager, platforms=platforms,
                                         now=now, presence=presence),

@@ -76,10 +76,15 @@ class WorkspaceAgenda:
 
         tasks = self.store.list_tasks(user_uuid)   # open only, scheduled order
         tasks_today, tasks_overdue, tasks_in_progress = [], [], []
+        tasks_set_aside = []
         for t in tasks:
             sched = t["scheduled"]
             row = self._payload_row(t)
-            if sched == today_iso:
+            if t.get("set_aside_on") == today_iso:
+                # consciously parked for today (FOCUS_DOGFOOD_DESIGN section
+                # 2): out of the live buckets so nobody nudges about it
+                tasks_set_aside.append(row)
+            elif sched == today_iso:
                 tasks_today.append(row)
             elif sched and sched < today_iso:
                 tasks_overdue.append(row)
@@ -95,6 +100,7 @@ class WorkspaceAgenda:
             "tasks_today": tasks_today,
             "tasks_overdue": tasks_overdue,
             "tasks_in_progress": tasks_in_progress,
+            "tasks_set_aside": tasks_set_aside,
             "done_today": [],   # kept for shape-compat; the wins ledger owns this now
         }
 
@@ -111,6 +117,7 @@ class WorkspaceAgenda:
             "pom": t["pom_estimate"],
             "window": t["window"],
             "helper": t["helper"],
+            "next_action": t.get("next_action"),
         }
 
     @staticmethod
@@ -128,6 +135,7 @@ class WorkspaceAgenda:
         payload = self.get_payload(user_uuid)
         t, o, p = (payload["tasks_today"], payload["tasks_overdue"],
                    payload["tasks_in_progress"])
+        parked = payload["tasks_set_aside"]
         cycle = payload["cycle"]
         plans = payload["plans"]
         wins_week = len(self.store.list_wins(
@@ -136,7 +144,7 @@ class WorkspaceAgenda:
             user_uuid, today=today.isoformat(),
             until=(today + timedelta(days=_OCCASION_HORIZON_DAYS)).isoformat())
 
-        if not (t or o or p or cycle or plans or wins_week or occasions):
+        if not (t or o or p or parked or cycle or plans or wins_week or occasions):
             # a genuinely empty workspace (e.g. a brand-new user): no agenda
             # note at all rather than an empty-state line on every turn
             return None
@@ -162,6 +170,11 @@ class WorkspaceAgenda:
                          + self._join(p, _MAX_IN_PROGRESS, self._fmt_in_progress))
         elif not (t or o) and (cycle or plans):
             lines.append("nothing scheduled today, nothing overdue.")
+        if parked:
+            # the person parked these on purpose - name them so nobody
+            # nudges, and don't count them under today
+            lines.append("set aside today (their call, don't nudge): "
+                         + ", ".join(f'"{r["title"]}"' for r in parked[:_MAX_TODAY]))
 
         if plans:
             by_helper: dict[str, list[str]] = {}
@@ -192,6 +205,8 @@ class WorkspaceAgenda:
         base = f'"{row.get("title", "")}"'
         if meta:
             base += f" [{', '.join(meta)}]"
+        if row.get("next_action"):
+            base += f" - next: {row['next_action']}"   # the scope, if they set one
         if row.get("window"):
             base += f" ({row['window']})"    # the day's window layout, inline
         return base

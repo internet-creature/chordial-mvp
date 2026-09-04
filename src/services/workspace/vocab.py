@@ -177,6 +177,10 @@ def format_task(row: dict) -> str:
     _kv(parts, "helper", row.get("helper"))
     if row.get("reschedules"):
         _kv(parts, "reschedules", row["reschedules"])
+    if row.get("next_action"):
+        _kv(parts, "next", f'"{row["next_action"]}"')
+    if row.get("set_aside_on"):
+        _kv(parts, "set-aside", row["set_aside_on"])
     _kv(parts, "id", row["public_id"])
     return " ".join(parts)
 
@@ -214,7 +218,8 @@ def format_commitment(row: dict) -> str:
     _kv(parts, "blocks", row.get("blocks_planned"))
     _kv(parts, "plan", row.get("plan_title"))
     _kv(parts, "task", row.get("task_title"))
-    _kv(parts, "next", row.get("next_action"))
+    if row.get("next_action"):
+        _kv(parts, "next", f'"{row["next_action"]}"')
     _kv(parts, "id", row["public_id"])
     return " ".join(parts)
 

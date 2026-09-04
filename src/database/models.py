@@ -553,6 +553,19 @@ class Task(Base):
     reschedules = Column(Integer, default=0)
     description = Column(String, nullable=True)
 
+    # the focus dogfood round (docs/FOCUS_DOGFOOD_DESIGN.md sections 2-3, 10):
+    # `next_action` is the scope - the one-line first piece the clock runs
+    # on (cap 140, same discipline as Commitment.next_action); `set_aside_on`
+    # parks the task for ONE user-local day without touching its status
+    # (the next day it simply returns); `set_aside_count` is the "parked on
+    # N distinct days" signal behind the breakdown offer, and
+    # `breakdown_offer_dismissed_at` remembers that the offer was declined
+    # so every device agrees never to repeat it.
+    next_action = Column(String, nullable=True)
+    set_aside_on = Column(Date, nullable=True)
+    set_aside_count = Column(Integer, default=0)
+    breakdown_offer_dismissed_at = Column(DateTime, nullable=True)
+
     notion_page_id = Column(String, nullable=True)  # reserved: the row<->page mapping for the future one-way notion mirror
 
     created_at = Column(DateTime, default=datetime.utcnow)

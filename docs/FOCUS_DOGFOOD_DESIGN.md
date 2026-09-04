@@ -141,8 +141,12 @@ through `vocab.canonical_status`. unknown keys → 400. returns `_task_row(task)
 gains `next_action` and `set_aside_on`. the existing status route stays (the offline
 finish ledger uses it); willowden's rust core calls this same route.
 
-migration: one alembic revision adding both nullable columns. `WorkspaceStore.update_task`
-allows `next_action` and `set_aside_on`; `create_task` accepts `next_action`.
+migration: one alembic revision adding the nullable columns (`next_action`, `set_aside_on`,
+plus §10's `set_aside_count` and `breakdown_offer_dismissed_at` so the schema lands once).
+`WorkspaceStore.update_task` allows `next_action`, `set_aside_on`, and
+`breakdown_offer_dismissed_at`; `create_task` accepts `next_action`. the store bumps
+`set_aside_count` when `set_aside_on` moves to a day it wasn't already - re-stamping
+today or clearing counts nothing.
 
 ## 5. vel's sense of the day
 
@@ -529,8 +533,8 @@ Cheap and high-value, so it moves up the §12 order:
 | # | slice | scope |
 |---|---|---|
 | 1 | window basics | (unchanged) — **BUILT 2026-09-03** on `dogfood/window-basics`: select-then-start (row click selects; ▸ / start / switch run the clock; Enter/Escape), 10·25·50 chips remembered per task per session, den ↔ bar forms with per-form positions and the auto-bar toggle, pin / minimize / close controls (both hide; tray restores). smoke-verified in the browser pane against a scratch sidecar; the tauri geometry calls are guarded no-ops outside the shell and need the boxed-app smoke |
-| **2** | **the morning, v0** | `Calendar` brief rhythm + `morning_time` preference; RecencyGate, AlreadyTalkedToday, DayCapGate; `beat` in extras → `morning` posture from agenda + `previously:` only; follow-through cap. Server-only, ~a day. Tests: the 21:55-unanswered scenario produces a brief at 08:30 the next day; a reply at 07:50 skips the brief; day cap holds. |
-| 3 | server spine | (was 2) |
+| **2** | **the morning, v0** | `Calendar` brief rhythm + `morning_time` preference; RecencyGate, AlreadyTalkedToday, DayCapGate; `beat` in extras → `morning` posture from agenda + `previously:` only; follow-through cap. Server-only, ~a day. Tests: the 21:55-unanswered scenario produces a brief at 08:30 the next day; a reply at 07:50 skips the brief; day cap holds. — **BUILT 2026-09-04** (PR #85, sol's round added MorningSlotGate + quiet-hours validation) |
+| 3 | server spine | (was 2) — **BUILT 2026-09-04** on `dogfood/server-spine`: migration `b7e4d2f9a1c3` (all four columns, `set_aside_count` bumps only on a NEW day), `PATCH /api/v1/tasks/{id}` (unknown keys 400, preflight allows PATCH), `set_aside` bucket + `next_action`/`set_aside_on` on every row, agenda payload `tasks_set_aside` + digest line `set aside today (their call, don't nudge): …` + `next:` on today rows, `create_task`/`update_task` tools accept `next_action`. no UI yet - slice 4 renders it |
 | 4 | scope + set aside | (was 3) |
 | 5 | vel's day | (was 4) — enriches the brief with yesterday's `FocusDay` digest |
 | 6 | ask pip | (was 5) |

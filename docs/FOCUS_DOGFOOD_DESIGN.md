@@ -468,9 +468,13 @@ same — the "presence within N days" and "N per local day" shapes are generic):
   user-local day, and no two beats within 3h. Counts agent messages with
   `message_type="scheduled"` since local midnight.
 
-The cadence ladder still applies to every beat (one chain, one count): an ignored brief
-three days running moves the person to weekly, which is what the recency window would do
-anyway — the two agree by construction.
+**The ladder governs the follow-through, not the brief** (found while building: the
+ladder's rungs are 24-hour waits, so a check-in at 21:55 plus "1d" lands at 21:55 and
+snaps past the morning window — under the ladder the brief would skip a day after any
+evening send). The brief's ladder *is* the recency window. Unanswered briefs still count in
+the chain — they are proactive sends — so ignored mornings hold the follow-through exactly
+as ignored check-ins do, and after four quiet days the brief stops and the weekly rung
+takes over. `PROACTIVE_DAILY_CAP` defaults to 2 until the evening settle lands.
 
 ### 13.3 the `morning` posture
 

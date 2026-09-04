@@ -34,6 +34,7 @@ from dainframe.core import (
 from dainframe.pulse import (
     Cadence,
     CadenceGate,
+    Calendar,
     as_utc,
     FiringPlan,
     GateDecision,
@@ -52,12 +53,21 @@ from src.managers.event_log import EventLog
 from src.managers.event_store_adapter import SqlEventStore, SqlUserEvents
 from src.managers.user_manager import UserManager
 from src.personas import CHAIR_ID
+from src.services import beats
+from src.services.beats import (
+    AlreadyTalkedTodayGate,
+    DayCapGate,
+    ForBeats,
+    RecencyGate,
+    morning_cron,
+)
 from src.services.metering import BudgetGate
 from src.services.orchestration import chordial_visibility
 
 logger = logging.getLogger(__name__)
 
-CHECKIN_RHYTHM = "checkin"
+CHECKIN_RHYTHM = beats.BEAT_CHECKIN
+MORNING_RHYTHM = beats.BEAT_MORNING
 CURATION_RHYTHM = "curation"
 
 # the recency clock: any MESSAGE on any platform (one person on two platforms
@@ -131,6 +141,24 @@ def checkin_rhythm(every_minutes: Optional[int] = None) -> TaggedRhythm:
     )
 
 
+def morning_rhythm(time_hhmm: str, tz_of) -> TaggedRhythm:
+    """the morning brief (docs/FOCUS_DOGFOOD_DESIGN.md §13.1): a calendar
+    beat at a user-local time. `misfire="skip"`: a brief missed while the
+    server was down is not owed at 3pm. like the taper's stretched beat,
+    a non-default time rides in the rhythm id - the pulse store persists
+    horizons per key, and a changed time under the same key would sleep
+    out the old one; the house time keeps the bare id."""
+    canonical = beats.canonical_morning_time(time_hhmm)
+    rhythm_id = (MORNING_RHYTHM if canonical == Config.MORNING_BRIEF_TIME
+                 else f"{MORNING_RHYTHM}@{canonical}")
+    return TaggedRhythm(
+        rhythm_id=rhythm_id,
+        kind="scheduled_tick",
+        rhythm=Calendar(cron=morning_cron(canonical), tz_of=tz_of,
+                        misfire="skip"),
+    )
+
+
 def curation_rhythm() -> TaggedRhythm:
     """the memory-cleanup beat: due whenever the curator's discovery lists
     the user. the small `every` floor only keeps a failing curation from
@@ -147,12 +175,16 @@ class ChordialPulseSource:
     needs no registration dance - exactly the old per-cycle user scan."""
 
     def __init__(self, user_manager: UserManager, curator=None,
-                 checkin_minutes=None):
+                 checkin_minutes=None, morning_time=None):
         self.user_manager = user_manager
         self.curator = curator
         # the taper's read: user_uuid -> stretched interval in minutes
         # (sync, run off-loop). None = the flat base beat for everyone.
         self.checkin_minutes = checkin_minutes
+        # the brief's read: user_uuid -> 'HH:MM' or None for off (sync,
+        # off-loop). None here = no morning beat for anyone (dev rigs, and
+        # the pre-§13 composition the older tests pin).
+        self.morning_time = morning_time
 
     async def _beat(self, user_uuid: str) -> Optional[int]:
         """the taper must never stall the pulse: any failure here is the
@@ -165,11 +197,27 @@ class ChordialPulseSource:
             logger.exception("taper read failed for %s; base beat", user_uuid)
             return None
 
+    async def _morning(self, user_uuid: str) -> Optional[str]:
+        """a failing preference read costs the brief for this cycle only,
+        never the check-in beside it."""
+        if self.morning_time is None:
+            return None
+        try:
+            return await asyncio.to_thread(self.morning_time, user_uuid)
+        except Exception:
+            logger.exception("morning time read failed for %s; no brief "
+                             "this cycle", user_uuid)
+            return None
+
     async def streams(self):
         rhythms: dict[str, list[TaggedRhythm]] = {}
         for user_uuid in await self.user_manager.get_scheduled_users():
             rhythms.setdefault(user_uuid, []).append(
                 checkin_rhythm(await self._beat(user_uuid)))
+            morning = await self._morning(user_uuid)
+            if morning is not None:
+                rhythms[user_uuid].append(morning_rhythm(
+                    morning, self.user_manager.get_user_timezone))
         if self.curator is not None:
             try:
                 for user_uuid in await self.curator.find_users_needing_curation():
@@ -328,6 +376,9 @@ class ChordialStimulusFactory:
             actor=CHAIR_ID,
             target=DeliveryTarget(platform=platform, target_id=platform_user_id),
             reason=decision.reason,
+            # which beat this is (§13): the gates and the prompt's posture
+            # both read it; the rhythm id's family names it
+            extras={"beat": beats.beat_of(rhythm.rhythm_id)},
             # if the user speaks between this plan and the stream lock, the
             # check-in is stale: cancel before generation. USER-level on
             # purpose (not the stimulus stream): with rooms, a message in
@@ -369,7 +420,8 @@ class ChordialStimulusFactory:
             target=plan.target,
             reason=plan.reason,
             precondition=plan.precondition,
-            extras={"user_id": user_uuid},
+            extras={"user_id": user_uuid,
+                    "beat": plan.extras.get("beat", CHECKIN_RHYTHM)},
         )
 
 
@@ -395,35 +447,60 @@ def build_pulse(
     trichotomy) routes each firing to the desk or the phone - see
     ChordialStimulusFactory."""
     from src.services import taper
+    tz_of = user_manager.get_user_timezone
     gates = [
         ScheduledOnly(OnboardingGate(user_manager)),
         ScheduledOnly(QuietHoursGate(
             Config.QUIET_HOURS_START,
             Config.QUIET_HOURS_END,
-            tz_of=user_manager.get_user_timezone,
+            tz_of=tz_of,
+        )),
+        # the brief's own gates (§13.2): only for people seen within a few
+        # days (beyond that the ladder owns them), and never when they've
+        # already messaged this morning
+        ScheduledOnly(ForBeats(RecencyGate(Config.MORNING_RECENCY_DAYS),
+                               {MORNING_RHYTHM})),
+        ScheduledOnly(ForBeats(AlreadyTalkedTodayGate(tz_of),
+                               {MORNING_RHYTHM})),
+        # the day's cap: every beat counts, none within a few hours of
+        # another - the brief, being first, always fits under it
+        ScheduledOnly(DayCapGate(
+            Config.PROACTIVE_DAILY_CAP,
+            timedelta(hours=Config.PROACTIVE_MIN_GAP_HOURS),
+            tz_of=tz_of,
         )),
         # the re-engagement ladder (replacing the doubling backoff, whose
         # caps went permanently silent after ~a day of trying): the house
         # spec parses at build time so a broken env var fails the boot, not
         # a 3am firing. per-user overrides resolve per check. the gate
         # reads exactly what the ladder needs - no history-window knob.
-        ScheduledOnly(CadenceGate(
+        # the FOLLOW-THROUGH's gate only: its 24h rungs would skip the
+        # brief a day after any evening send (21:55 + 1d snaps past the
+        # morning window); the brief's ladder is the recency window above.
+        # unanswered briefs still count in this chain - they are proactive
+        # sends - so ignored mornings hold the follow-through exactly as
+        # ignored check-ins do.
+        ScheduledOnly(ForBeats(CadenceGate(
             cadence_of(Cadence.parse(Config.OUTREACH_CADENCE)),
             proactive_message_type="scheduled",
-            tz_of=user_manager.get_user_timezone,
+            tz_of=tz_of,
             # presence is not just speech: banking a focus block lands as
             # a user-authored action event (focus_flow), and showing up
             # by doing resets the ladder like a reply would
             presence_kinds=frozenset({"message", "action"}),
-        )),
+        ), {CHECKIN_RHYTHM})),
         # the meter's soft gate (phase 7c): past the soft budget, proactive
         # outreach waits. deliberately LAST - the only gate that reads the
         # ledger, so the cheap denials win first. off by default (knobs 0).
         ScheduledOnly(BudgetGate()),
     ]
     return Pulse(
-        source=ChordialPulseSource(user_manager, curator=curator,
-                                   checkin_minutes=taper.checkin_minutes),
+        source=ChordialPulseSource(
+            user_manager, curator=curator,
+            checkin_minutes=taper.checkin_minutes,
+            morning_time=lambda uid: beats.morning_time_of(
+                uid, Config.MORNING_BRIEF_TIME),
+        ),
         factory=ChordialStimulusFactory(user_manager, platforms=platforms,
                                         now=now, presence=presence),
         engine=orchestrator,

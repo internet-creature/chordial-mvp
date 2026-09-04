@@ -69,6 +69,10 @@ class HelperAgent:
                 user_pronouns=user_pronouns,
                 tools=self.registry.definitions(),
                 ambient_context=briefing.ambient_context,
+                # the day's beat shapes the instruction (§13.3); absent =
+                # the plain check-in, byte-identical to before
+                posture=briefing.extras.get("checkin_posture"),
+                first_thing=briefing.extras.get("first_thing"),
             )
             turn_kind = "scheduled"
         else:

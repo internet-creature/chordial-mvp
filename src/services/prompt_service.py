@@ -540,6 +540,47 @@ class PromptService:
         self._log_request(user_name, "introduction", request)
         return request
 
+    @staticmethod
+    def _scheduled_instruction(who: str, posture: Optional[str],
+                               first_thing: Optional[str]) -> str:
+        """the synthetic turn's instruction, by posture. the plain check-in
+        is the pre-§13 text verbatim (warm caches, and the tests that pin
+        it). the morning postures are instruction copy, not vel's voice -
+        her voice stays in the persona block."""
+        if posture in ("morning_first", "morning_open"):
+            lines = [
+                f"this is the morning brief - {who} hasn't messaged you yet "
+                "today. write a short, warm opener for their day:",
+                "- if yesterday had anything worth a line (what you know is "
+                "above), wrap it in one - otherwise skip straight to today",
+            ]
+            if posture == "morning_first" and first_thing:
+                lines.append(
+                    f'- point at ONE first thing: "{first_thing}". offer it '
+                    "as a small block, one tap away in the companion window "
+                    "- don't list the day")
+            else:
+                lines.append(
+                    "- nothing is planned yet: ask what today's shape is - "
+                    "one open question, not a form. a few quiet days are "
+                    "fine and unremarkable")
+            lines += [
+                "- no greeting that ages badly - they may read this at 2pm: "
+                "\"this morning\", never \"good morning\"",
+                "- the workspace is context, not content: a companion who "
+                "happened to notice, never a dashboard. no streaks, no scores",
+                "- keep it short; ending on a question is optional",
+            ]
+            return "\n".join(lines)
+        return (
+            f"this is a scheduled check-in (the user hasn't just messaged you). "
+            f"write a brief, warm, natural message to {who}:\n"
+            "- be aware of the time without always stating it\n"
+            "- reference recent conversation if relevant\n"
+            "- ask something open-ended, or offer a gentle nudge\n"
+            "- keep it short"
+        )
+
     async def build_scheduled_request(
         self,
         conversation_history: List[Event],
@@ -549,10 +590,17 @@ class PromptService:
         user_pronouns: Optional[str] = None,
         tools: Optional[List[ToolDef]] = None,
         ambient_context: Optional[str] = None,
+        posture: Optional[str] = None,
+        first_thing: Optional[str] = None,
     ) -> AIRequest:
         """build the request for a proactive check-in. all history is stable;
         a synthetic 'now' turn carries the generation instructions (plus any
-        trailing action events and the ambient agenda context)."""
+        trailing action events and the ambient agenda context).
+
+        `posture` (docs/FOCUS_DOGFOOD_DESIGN.md §13.3) picks the instruction:
+        None is the plain check-in, byte-identical to before; the morning
+        postures write the day's opener, pointing at `first_thing` when the
+        day has one."""
         system = await self._build_system_blocks(
             user_name, user_uuid, user_timezone, user_pronouns
         )
@@ -573,12 +621,7 @@ class PromptService:
                 f"[current time - {now_line}]\n"
                 f"{actions_block}"
                 f"{ambient_block}"
-                f"this is a scheduled check-in (the user hasn't just messaged you). "
-                f"write a brief, warm, natural message to {who}:\n"
-                "- be aware of the time without always stating it\n"
-                "- reference recent conversation if relevant\n"
-                "- ask something open-ended, or offer a gentle nudge\n"
-                "- keep it short"
+                + self._scheduled_instruction(who, posture, first_thing)
             ),
         ))
 

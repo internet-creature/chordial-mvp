@@ -22,6 +22,24 @@ import {
 } from "../api/sidecar";
 import type { DoneTaskRow, TaskRow, TodayPayload } from "../api/types";
 import {
+  autoBarEnabled,
+  barPositionFrom,
+  clampToArea,
+  denPositionFrom,
+  FORM_SIZES,
+  formFor,
+  lastTarget,
+  loadFormPosition,
+  loadLastForm,
+  rememberTarget,
+  saveFormPosition,
+  saveLastForm,
+  setAutoBar,
+  targetChoices,
+  type Form,
+  type Point,
+} from "../lib/companion";
+import {
   addPendingDone,
   listPendingDone,
   removePendingDone,
@@ -40,6 +58,15 @@ import {
   SESSION_REV_KEY,
   TOKEN_STORAGE_KEY,
 } from "../lib/session";
+import {
+  hideWindow,
+  isAlwaysOnTop,
+  moveWindow,
+  resizeWindow,
+  setAlwaysOnTop,
+  windowPosition,
+  workArea,
+} from "../lib/tauriWindow";
 import Confetti from "./Confetti";
 import InlineContent from "./InlineContent";
 
@@ -57,10 +84,12 @@ function mmss(totalSeconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-/** the deer's window: the day's tasks with their banked-time bars, one
- * running clock, and a small creature keeping you company. tasks are
- * canonical on the server; the clock and the banked minutes live in the
- * sidecar; this window is where they meet. */
+/** the companion window (docs/FOCUS_DOGFOOD_DESIGN.md §1, §11): the
+ * day's tasks with their banked-time bars, one running clock, and a
+ * small creature keeping you company. tasks are canonical on the server;
+ * the clock and the banked minutes live in the sidecar; this window is
+ * where they meet. it wears two forms: the DEN (everything) while no
+ * clock runs, and the slim BAR while one does. */
 export default function DeerWindow() {
   // reactive, not read-once: the person links in the MAIN window while
   // this one is already open. the cross-window storage event on the rev
@@ -93,9 +122,22 @@ export default function DeerWindow() {
     removed: number;
     credited: number;
   } | null>(null);
+  // select, then start: a click opens a row; only ▸ / start run the clock
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [chipMinutes, setChipMinutes] = useState<number | null>(null);
+  // the forms: den <-> bar, remembered preference, and "peeking" = the
+  // den opened from the bar without stopping the clock
+  const [autoBar, setAutoBarState] = useState(() =>
+    autoBarEnabled(window.localStorage),
+  );
+  const [peeking, setPeeking] = useState(false);
+  const [onTop, setOnTop] = useState<boolean | null>(null);
   const lineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // the window geometry runner: one switch at a time, in order
+  const geometry = useRef<Promise<void>>(Promise.resolve());
+  const wornForm = useRef<Form | null>(null);
 
   const showLine = useCallback((text: string) => {
     setLine(text);
@@ -250,6 +292,79 @@ export default function DeerWindow() {
     return () => clearInterval(timer);
   }, [focus.running]);
 
+  // a stopped clock ends the peek - the next block starts in the bar
+  useEffect(() => {
+    if (!focus.running) setPeeking(false);
+  }, [focus.running]);
+
+  // the window's own controls: read the on-top state once
+  useEffect(() => {
+    isAlwaysOnTop()
+      .then((value) => setOnTop(value))
+      .catch(() => {});
+  }, []);
+
+  const form = formFor({ running: focus.running, autoBar, peeking });
+
+  // the form switch (§11.1): each form keeps its own place on the screen.
+  // the switch saves where the OLD form was, resizes, and moves to where
+  // the new form last sat (or, the first time, along the old form's
+  // bottom edge, so the bar appears where the deer's feet were). on
+  // mount the den size is enforced - the window-state plugin restores
+  // whatever rect was current at exit, bar included - and the den is
+  // moved only when the exit was in bar form (otherwise the plugin's
+  // restore is the freshest place). every destination is clamped into
+  // the monitor's work area: the bar is wider than the den, and a
+  // remembered place may belong to a screen that's gone. serialised
+  // through a promise chain so a quick flip-back never interleaves two
+  // resizes.
+  useEffect(() => {
+    geometry.current = geometry.current
+      .then(async () => {
+        const prev = wornForm.current;
+        if (prev === form) return;
+        const settle = async (target: Point | null) => {
+          const area = await workArea();
+          return target && area
+            ? clampToArea(target, FORM_SIZES[form], area)
+            : target;
+        };
+        if (prev === null) {
+          const exitedIn = loadLastForm(window.localStorage);
+          await resizeWindow(FORM_SIZES[form]);
+          if (exitedIn === "bar" && form === "den") {
+            const here = await windowPosition();
+            const target = await settle(
+              loadFormPosition(window.localStorage, "den") ??
+                (here
+                  ? denPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar)
+                  : null),
+            );
+            if (target) await moveWindow(target);
+          }
+        } else {
+          const here = await windowPosition();
+          if (here) saveFormPosition(window.localStorage, prev, here);
+          let target = loadFormPosition(window.localStorage, form);
+          if (!target && here) {
+            target =
+              form === "bar"
+                ? barPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar)
+                : denPositionFrom(here, FORM_SIZES.den, FORM_SIZES.bar);
+          }
+          target = await settle(target);
+          await resizeWindow(FORM_SIZES[form]);
+          if (target) await moveWindow(target);
+        }
+        wornForm.current = form;
+        saveLastForm(window.localStorage, form);
+      })
+      .catch(() => {
+        // geometry is cosmetic; the clock and the list never depend on it
+        wornForm.current = form;
+      });
+  }, [form]);
+
   const pomMinutes = today?.pom_minutes ?? 25;
   // the clock shows CREDITED time: wall minus applied rewind excisions -
   // an applied correction visibly moves it back
@@ -286,14 +401,29 @@ export default function DeerWindow() {
     return Math.min(1, taskSeconds(task.id) / target);
   }
 
-  async function onPickTask(task: TaskRow) {
+  /** a click opens the row (or closes it again); nothing starts */
+  function selectTask(task: TaskRow) {
+    if (selectedId === task.id) {
+      setSelectedId(null);
+      return;
+    }
+    setSelectedId(task.id);
+    setChipMinutes(lastTarget(window.sessionStorage, task.id, pomMinutes));
+  }
+
+  /** run the clock on a task - if another task's clock is running this
+   * IS the switch (the old run banks first) */
+  async function startTask(task: TaskRow, minutes: number) {
     if (busy || (focus.running && focus.task_id === task.id)) return;
     setBusy(true);
     setConfirmingFinish(false);
     try {
-      const result = await startFocus(task.id, task.title, pomMinutes);
+      const result = await startFocus(task.id, task.title, minutes);
       setFocus(result.focus);
       showLine(result.line);
+      rememberTarget(window.sessionStorage, task.id, minutes);
+      setSelectedId(null);
+      setPeeking(false); // a fresh start goes to the bar
     } catch (err) {
       showLine(err instanceof Error ? err.message : "hm, that didn’t work");
     } finally {
@@ -379,6 +509,29 @@ export default function DeerWindow() {
     await doFinish();
   }
 
+  /** the bar's pause: a combined choice (open question) needs the den */
+  async function onBarPause() {
+    if (busy) return;
+    if (offerOnActiveRun) {
+      setPeeking(true);
+      setConfirmingPause(true);
+      setConfirmingFinish(false);
+      return;
+    }
+    await doPause();
+  }
+
+  async function onBarFinish() {
+    if (busy) return;
+    if (offerOnActiveRun) {
+      setPeeking(true);
+      setConfirmingFinish(true);
+      setConfirmingPause(false);
+      return;
+    }
+    await onFinish();
+  }
+
   /** answer the card in place: remove a candidate boundary or keep all
    * time. a frozen run banks on the answer, wearing its transition. */
   async function doResolve(action: "remove" | "keep", at?: string) {
@@ -451,23 +604,187 @@ export default function DeerWindow() {
     }
   }
 
-  return (
-    // the whole window is a handle: the deer is undecorated, so dragging
-    // her anywhere that isn't a control (the gaps, the deer herself) moves
-    // the window. tauri only honours the attribute on the element under
-    // the pointer, so it sits on the root, the strip, AND the deer - a
-    // button or chip inside keeps its click. needs
-    // core:window:allow-start-dragging in capabilities/default.json (the
-    // core:default set doesn't include it - found on the first boxed run,
-    // when she couldn't be moved at all).
-    <div className="deer-window" data-tauri-drag-region="true">
-      {celebrating && <Confetti onDone={() => setCelebrating(false)} />}
+  // --- the window's own controls (§11.2): hide, never quit --------------
 
+  function onHide() {
+    hideWindow().catch(() => {});
+  }
+
+  function onToggleTop() {
+    const next = onTop === false;
+    setAlwaysOnTop(next)
+      .then(() => setOnTop(next))
+      .catch(() => {});
+  }
+
+  function onAutoBarChange(on: boolean) {
+    setAutoBar(window.localStorage, on);
+    setAutoBarState(on);
+  }
+
+  const windowControls = (compact: boolean) => (
+    <div className={`deer-win${compact ? " compact" : ""}`}>
+      <button
+        className={`deer-win-btn${onTop === false ? " off" : ""}`}
+        onClick={onToggleTop}
+        aria-pressed={onTop !== false}
+        title={
+          onTop === false
+            ? "keep her on top of other windows"
+            : "let other windows cover her"
+        }
+      >
+        📌
+      </button>
+      <button
+        className="deer-win-btn"
+        onClick={onHide}
+        aria-label="minimize"
+        title="tuck her away — the tray brings her back"
+      >
+        –
+      </button>
+      <button
+        className="deer-win-btn"
+        onClick={onHide}
+        aria-label="close"
+        title="close the window — the clock keeps counting"
+      >
+        ×
+      </button>
+    </div>
+  );
+
+  // the celebration lives outside both forms: a den <-> bar switch
+  // mid-burst must neither restart it nor lose it (the canvas is
+  // positioned against the viewport, so it covers whichever form is on)
+  const confetti = celebrating && (
+    <Confetti onDone={() => setCelebrating(false)} />
+  );
+
+  // --- the bar: the slim form while a clock runs (§11.1) ----------------
+
+  if (form === "bar") {
+    return (
+      <>
+      {confetti}
+      <div className="deer-bar" data-tauri-drag-region="true">
+        <button
+          className={`deer-bar-deer${overtime ? " perked" : ""}${
+            activity?.blocked ? " hushed" : ""
+          }`}
+          onClick={() => setPeeking(true)}
+          title="open the den — the clock keeps running"
+          aria-label="open the den"
+        >
+          🦌
+        </button>
+        <div className="deer-bar-text" data-tauri-drag-region="true">
+          {line ? (
+            <span className="deer-bar-line">
+              <InlineContent content={line} />
+            </span>
+          ) : (
+            <span className="deer-bar-title" data-tauri-drag-region="true">
+              {activity?.blocked
+                ? "hushed — meeting nearby"
+                : (focus.label ?? "on watch beside you")}
+            </span>
+          )}
+          <span className="deer-bar-fill">
+            <span
+              className="deer-bar-fill-bar"
+              style={{
+                width: `${Math.min(1, runSeconds / targetSeconds) * 100}%`,
+              }}
+            />
+          </span>
+        </div>
+        <span className={`deer-bar-clock${overtime ? " over" : ""}`}>
+          {mmss(runSeconds)}
+        </span>
+        <div className="deer-bar-controls">
+          {offer && (
+            <button
+              className="deer-bar-chip"
+              onClick={() => {
+                setPeeking(true);
+                expandCard();
+              }}
+              title="a small question is waiting in the den"
+              aria-label="open the question"
+            >
+              ?
+            </button>
+          )}
+          {confirmingFinish ? (
+            <>
+              <button
+                className="deer-bar-btn finish confirm"
+                onClick={onFinish}
+                disabled={busy}
+                title="finish early?"
+              >
+                early ✓
+              </button>
+              <button
+                className="deer-bar-btn"
+                onClick={() => setConfirmingFinish(false)}
+                title="keep going"
+                aria-label="keep going"
+              >
+                ✕
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="deer-bar-btn"
+                onClick={onBarPause}
+                disabled={busy}
+                title="pause — the minutes bank"
+                aria-label="pause"
+              >
+                ❚❚
+              </button>
+              <button
+                className="deer-bar-btn finish"
+                onClick={onBarFinish}
+                disabled={busy}
+                title="finished"
+                aria-label="finished"
+              >
+                ✓
+              </button>
+            </>
+          )}
+        </div>
+        {windowControls(true)}
+      </div>
+      </>
+    );
+  }
+
+  // --- the den ---------------------------------------------------------
+
+  // the whole window is a handle: the deer is undecorated, so dragging
+  // her anywhere that isn't a control (the gaps, the deer herself) moves
+  // the window. tauri only honours the attribute on the element under
+  // the pointer, so it sits on the root, the strip, AND the deer - a
+  // button or chip inside keeps its click. needs
+  // core:window:allow-start-dragging in capabilities/default.json (the
+  // core:default set doesn't include it - found on the first boxed run,
+  // when she couldn't be moved at all).
+  return (
+    <>
+    {confetti}
+    <div className="deer-window" data-tauri-drag-region="true">
       <div className="deer-drag" data-tauri-drag-region="true">
         <span
           className={`deer-link-dot${connected ? " on" : ""}`}
           title={connected ? "the deer is home" : "looking for the sidecar…"}
         />
+        {windowControls(false)}
       </div>
 
       {line && (
@@ -689,6 +1006,15 @@ export default function DeerWindow() {
               </>
             )}
           </div>
+          {autoBar && peeking && (
+            <button
+              className="deer-to-bar"
+              onClick={() => setPeeking(false)}
+              title="back to the slim bar"
+            >
+              back to the bar
+            </button>
+          )}
         </div>
       )}
 
@@ -697,6 +1023,7 @@ export default function DeerWindow() {
           <ul>
             {openTasks.map((task) => {
               const active = focus.running && focus.task_id === task.id;
+              const selected = selectedId === task.id;
               if (pendingDone.includes(task.id)) {
                 // finished here, not yet confirmed by the server: visibly
                 // done (never open-and-clickable), honestly still syncing
@@ -714,20 +1041,121 @@ export default function DeerWindow() {
               }
               return (
                 <li key={task.id}>
-                  <button
-                    className={`deer-task${active ? " active" : ""}`}
-                    onClick={() => onPickTask(task)}
-                    disabled={busy || active}
-                    title={active ? "this clock is running" : "start / switch"}
+                  <div
+                    className={`deer-task${active ? " active" : ""}${
+                      selected ? " selected" : ""
+                    }`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={task.title}
+                    aria-expanded={selected}
+                    onClick={() => selectTask(task)}
+                    onKeyDown={(e) => {
+                      // escape closes the row from anywhere inside it -
+                      // a chip or the start button included
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setSelectedId(null);
+                        e.currentTarget.focus();
+                        return;
+                      }
+                      // the row's own keys only - an inner button's Enter
+                      // already clicked it and must not start twice
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        if (selected && !active) {
+                          void startTask(task, chipMinutes ?? pomMinutes);
+                        } else {
+                          selectTask(task);
+                        }
+                      }
+                    }}
                   >
-                    <span className="deer-task-title">{task.title}</span>
+                    <div className="deer-task-head">
+                      <span className="deer-task-title">{task.title}</span>
+                      {active ? (
+                        <span className="deer-task-live">running</span>
+                      ) : (
+                        <button
+                          className="deer-task-play"
+                          disabled={busy}
+                          title={
+                            focus.running
+                              ? "switch to this one"
+                              : "start this one"
+                          }
+                          aria-label={
+                            focus.running
+                              ? `switch to ${task.title}`
+                              : `start ${task.title}`
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void startTask(
+                              task,
+                              lastTarget(
+                                window.sessionStorage,
+                                task.id,
+                                pomMinutes,
+                              ),
+                            );
+                          }}
+                        >
+                          ▸
+                        </button>
+                      )}
+                    </div>
                     <span className="deer-task-bar">
                       <span
                         className="deer-task-fill"
                         style={{ width: `${taskFill(task) * 100}%` }}
                       />
                     </span>
-                  </button>
+                    {selected && (
+                      <div
+                        className="deer-task-detail"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {active ? (
+                          <span className="deer-task-note">
+                            this clock is running — pause or finish above
+                          </span>
+                        ) : (
+                          <>
+                            <div
+                              className="deer-chips"
+                              role="radiogroup"
+                              aria-label="block target"
+                            >
+                              {targetChoices(pomMinutes).map((m) => (
+                                <button
+                                  key={m}
+                                  className={`deer-chip${
+                                    chipMinutes === m ? " on" : ""
+                                  }`}
+                                  role="radio"
+                                  aria-checked={chipMinutes === m}
+                                  onClick={() => setChipMinutes(m)}
+                                >
+                                  {m}m
+                                </button>
+                              ))}
+                            </div>
+                            <button
+                              className="deer-start"
+                              disabled={busy}
+                              onClick={() =>
+                                startTask(task, chipMinutes ?? pomMinutes)
+                              }
+                            >
+                              {focus.running ? "switch to this" : "start"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </li>
               );
             })}
@@ -770,6 +1198,16 @@ export default function DeerWindow() {
           link chordial in the main window first — then i can see your day.
         </p>
       )}
+
+      <label className="deer-pref">
+        <input
+          type="checkbox"
+          checked={autoBar}
+          onChange={(e) => onAutoBarChange(e.currentTarget.checked)}
+        />
+        slim bar while a clock runs
+      </label>
     </div>
+    </>
   );
 }

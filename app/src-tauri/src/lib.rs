@@ -7,7 +7,7 @@ mod updater;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, RunEvent,
+    Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
 
@@ -27,6 +27,19 @@ pub fn run() {
                 .build(),
         )
         .manage(sidecar::SidecarState::new())
+        // the companion window is never destroyed while the app runs: a
+        // platform close (cmd-w, the window menu) HIDES her exactly like
+        // her own close button, so the tray can always bring her back and
+        // the sidecar's clock keeps counting underneath (sol's #84
+        // round - a destroyed window could not be re-shown)
+        .on_window_event(|window, event| {
+            if window.label() == "deer" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             credentials::credential_get,
             credentials::credential_set,
@@ -52,7 +65,7 @@ pub fn run() {
             // the tray: chordial lives in the corner of the day, so the
             // deer can be tucked away and called back without the dock
             let toggle = MenuItem::with_id(
-                app, "toggle-deer", "show / hide the deer", true,
+                app, "toggle-deer", "show / hide the companion", true,
                 None::<&str>,
             )?;
             let check = MenuItem::with_id(

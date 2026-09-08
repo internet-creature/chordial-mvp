@@ -50,27 +50,48 @@
 .deer-head {
   width: 100%;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 10px;
+  padding-left: 2px;
   flex-shrink: 0;
   cursor: grab;
 }
 
 .deer-bubble {
+  /* an sms bubble: its own pastel (sea glass - nothing else in the room
+     wears it), no hairline, a tail toward the deer */
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 34px;
   display: flex;
   align-items: center;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  border-bottom-left-radius: 4px;
-  padding: 7px 11px;
+  background: linear-gradient(180deg, #e6f8f1, #d2efe6);
+  border-radius: 16px;
+  border-bottom-left-radius: 6px;
+  padding: 8px 12px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--ink-dim);
-  box-shadow: 0 6px 18px -8px var(--shadow);
+  color: #3b5a52;
+  box-shadow: 0 6px 16px -9px rgba(60, 110, 95, 0.45);
+}
+
+.deer-bubble::before {
+  /* the tail: a rotated square in the bubble's colour, sitting over the
+     room's gradient (the two-pseudo-element trick needs a flat page) */
+  content: "";
+  position: absolute;
+  left: -5px;
+  bottom: 7px;
+  width: 12px;
+  height: 12px;
+  background: #d2efe6;
+  border-radius: 2px;
+  transform: rotate(45deg) skew(8deg, 8deg);
+}
+
+.deer-bubble-text {
+  min-width: 0;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -78,26 +99,14 @@
 }
 
 .deer-bubble.speaking {
-  color: var(--ink);
-  animation: bubble-in 0.3s ease;
-}
-
-@keyframes bubble-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  color: #2d4a42;
 }
 
 .deer-self {
   font-size: 30px;
   line-height: 1;
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-bottom: 1px;
   transition: transform 0.4s ease;
   /* she is the handle: drag the deer to move the window */
   cursor: grab;
@@ -129,9 +138,6 @@
     transition: none;
   }
 
-  .deer-bubble {
-    animation: none;
-  }
 }
 
 .deer-session {

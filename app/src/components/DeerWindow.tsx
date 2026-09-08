@@ -980,20 +980,22 @@ export default function DeerWindow() {
           role="status"
           aria-live="polite"
         >
-          <InlineContent
-            content={
-              line ??
-              bubbleFallback({
-                blocked: !!activity?.blocked,
-                drifting: !!activity?.drifting,
-                running: focus.running,
-                overtime,
-                openCount: openTasks.length,
-                doneCount: doneTasks.length,
-                minutesToday,
-              })
-            }
-          />
+          <span className="deer-bubble-text">
+            <InlineContent
+              content={
+                line ??
+                bubbleFallback({
+                  blocked: !!activity?.blocked,
+                  drifting: !!activity?.drifting,
+                  running: focus.running,
+                  overtime,
+                  openCount: openTasks.length,
+                  doneCount: doneTasks.length,
+                  minutesToday,
+                })
+              }
+            />
+          </span>
         </div>
       </div>
 

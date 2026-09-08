@@ -33,7 +33,7 @@ import asyncio
 import json
 import logging
 import uuid as uuid_mod
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 from weakref import WeakValueDictionary
@@ -97,6 +97,9 @@ def _task_row(t: dict) -> dict:
         "scheduled": t["scheduled"], "window": t["window"],
         "pom_estimate": t["pom_estimate"], "plan_title": t["plan_title"],
         "helper": t["helper"], "description": t["description"],
+        # the focus dogfood round: the scope line and the parked-today mark
+        "next_action": t.get("next_action"),
+        "set_aside_on": t.get("set_aside_on"),
     }
 
 
@@ -175,6 +178,9 @@ class WebService:
         app.router.add_post("/api/v1/tasks", self._api_v1_task_create)
         app.router.add_post("/api/v1/tasks/{task_id}/status",
                             self._api_v1_task_status)
+        # the shaping seam (docs/FOCUS_DOGFOOD_DESIGN.md section 4): scope,
+        # reschedule, status, set aside - any subset in one body
+        app.router.add_patch("/api/v1/tasks/{task_id}", self._api_v1_task_patch)
         # rooms v0: the legacy per-user stream presented as today's room.
         # phase 2 makes rooms first-class; these routes keep their shape.
         app.router.add_get("/api/v1/rooms/current", self._api_room_current)
@@ -336,7 +342,7 @@ class WebService:
             headers["Vary"] = "Origin"
             headers["Access-Control-Allow-Headers"] = \
                 "Authorization, Content-Type"
-            headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
             headers["Access-Control-Max-Age"] = "600"
 
         if request.method == "OPTIONS":
@@ -442,10 +448,16 @@ class WebService:
         # same bucketing as the agenda payload (today / overdue / started-but-
         # undated), but rows keep their numeric ids for the focus api
         tasks = self.store.list_tasks(user_uuid)   # open only, scheduled order
-        buckets = {"overdue": [], "today": [], "in_progress": [], "done": []}
+        buckets = {"overdue": [], "today": [], "in_progress": [], "done": [],
+                   "set_aside": []}
         for t in tasks:
             sched = t["scheduled"]
-            if sched == today_iso:
+            if t.get("set_aside_on") == today_iso:
+                # parked for today (section 2): still open, still listed,
+                # but out of the day's live buckets so nothing nudges on it.
+                # tomorrow the stamp no longer matches and it simply returns.
+                buckets["set_aside"].append(_task_row(t))
+            elif sched == today_iso:
                 buckets["today"].append(_task_row(t))
             elif sched and sched < today_iso:
                 buckets["overdue"].append(_task_row(t))
@@ -754,6 +766,66 @@ class WebService:
                 canonical = vocab.canonical_status("task", status)
                 task = self.store.update_task(identity.user_uuid, task_id,
                                               status=canonical)
+            except ValueError as e:
+                return _error(str(e),
+                              status=404 if "not found" in str(e) else 400)
+            return web.json_response({"ok": True, "task": _task_row(task)})
+        return await asyncio.to_thread(update)
+
+    async def _api_v1_task_patch(self, request: web.Request) -> web.Response:
+        """PATCH /api/v1/tasks/{id} - the companion window's shaping seam
+        (docs/FOCUS_DOGFOOD_DESIGN.md section 4). body = any subset of
+        next_action / scheduled / status / set_aside; unknown keys are a
+        400 so a typo can't silently no-op. `set_aside: true` stamps the
+        user's local today (a today decision, never a lifecycle change);
+        `false` clears it. the status route stays for the offline finish
+        ledger; this route never touches the sidecar clock - the window
+        owns that ordering (pause first, then patch)."""
+        identity = await self._device(request)
+        body = await _json_body(request)
+        if not isinstance(body, dict) or not body:
+            return _error("a json object with at least one field is required")
+        unknown = set(body) - _TASK_PATCH_KEYS
+        if unknown:
+            return _error("unknown field(s): " + ", ".join(sorted(unknown)))
+        try:
+            task_id = int(request.match_info["task_id"])
+        except ValueError:
+            return _error("task id must be an integer")
+
+        changes: dict = {}
+        if "next_action" in body:
+            value = body["next_action"]
+            if value is not None and not isinstance(value, str):
+                return _error("next_action must be a string or null")
+            changes["next_action"] = value
+        if "scheduled" in body:
+            value = body["scheduled"]
+            if value is not None:
+                if not isinstance(value, str):
+                    return _error("scheduled must be an ISO date or null")
+                try:
+                    date.fromisoformat(value)
+                except ValueError:
+                    return _error("scheduled must be an ISO date (YYYY-MM-DD)")
+            changes["scheduled"] = value
+        if "status" in body:
+            if not isinstance(body["status"], str):
+                return _error("status must be a string")
+            try:
+                changes["status"] = vocab.canonical_status("task", body["status"])
+            except ValueError as e:
+                return _error(str(e))
+        if "set_aside" in body:
+            if not isinstance(body["set_aside"], bool):
+                return _error("set_aside must be true or false")
+            changes["set_aside_on"] = (
+                user_today(identity.user_uuid) if body["set_aside"] else None)
+
+        def update() -> web.Response:
+            try:
+                task = self.store.update_task(identity.user_uuid, task_id,
+                                              **changes)
             except ValueError as e:
                 return _error(str(e),
                               status=404 if "not found" in str(e) else 400)
@@ -1163,6 +1235,10 @@ def _client_ip(request: web.Request) -> str:
     the socket peer, which is exactly right there."""
     return (request.headers.get("CF-Connecting-IP")
             or request.remote or "unknown")
+
+
+# the PATCH body's whole vocabulary (section 4); anything else is a 400
+_TASK_PATCH_KEYS = frozenset({"next_action", "scheduled", "status", "set_aside"})
 
 
 def _error(message: str, status: int = 400) -> web.Response:

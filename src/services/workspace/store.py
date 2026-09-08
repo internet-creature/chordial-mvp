@@ -62,6 +62,19 @@ def _iso(value) -> Optional[str]:
     return value.isoformat() if value is not None else None
 
 
+# the scope line's cap (docs/FOCUS_DOGFOOD_DESIGN.md section 3) - one first
+# piece, not a paragraph; `description` keeps the long-form role
+NEXT_ACTION_CAP = 140
+
+
+def _clean_scope(value: Optional[str]) -> Optional[str]:
+    """strip and cap a next_action; blank collapses to None (unscoped)."""
+    if value is None:
+        return None
+    value = str(value).strip()[:NEXT_ACTION_CAP].strip()
+    return value or None
+
+
 def _add_months(d: date, months: int) -> date:
     y, m = divmod(d.month - 1 + months, 12)
     y, m = d.year + y, m + 1
@@ -157,6 +170,11 @@ class WorkspaceStore:
             "cycle_id": row.cycle_id, "cycle_title": cycle_title,
             "helper": row.helper, "reschedules": row.reschedules or 0,
             "description": row.description,
+            "next_action": row.next_action,
+            "set_aside_on": _iso(row.set_aside_on),
+            "set_aside_count": row.set_aside_count or 0,
+            "set_aside_counted_on": _iso(row.set_aside_counted_on),
+            "breakdown_offer_dismissed_at": _iso(row.breakdown_offer_dismissed_at),
             "created_at": _iso(row.created_at), "closed_at": _iso(row.closed_at),
         }
 
@@ -345,6 +363,7 @@ class WorkspaceStore:
                     plan_id: Optional[int] = None, goal_id: Optional[int] = None,
                     cycle_id: Optional[int] = None, helper: Optional[str] = None,
                     description: Optional[str] = None,
+                    next_action: Optional[str] = None,
                     notion_page_id: Optional[str] = None) -> dict:
         status = vocab.canonical_status("task", status)
         if priority is not None:
@@ -359,7 +378,9 @@ class WorkspaceStore:
                 scheduled=_coerce_date(scheduled), window=window,
                 pom_estimate=pom_estimate, plan_id=plan_id, goal_id=goal_id,
                 cycle_id=cycle_id, helper=helper, description=description,
+                next_action=_clean_scope(next_action),
                 notion_page_id=notion_page_id, reschedules=0,
+                set_aside_count=0,
             )
             self._apply_status(row, "task", status)
             db.add(row)
@@ -370,7 +391,8 @@ class WorkspaceStore:
     def update_task(self, user_uuid: str, task_id: int, **changes) -> dict:
         allowed = {"title", "status", "priority", "scheduled", "window",
                    "pom_estimate", "plan_id", "goal_id", "cycle_id",
-                   "helper", "description"}
+                   "helper", "description", "next_action", "set_aside_on",
+                   "breakdown_offer_dismissed_at"}
         self._check_keys(changes, allowed, "task")
         with get_db() as db:
             row = self._get_owned(db, Task, user_uuid, task_id, "task")
@@ -398,6 +420,20 @@ class WorkspaceStore:
                 if new is not None and row.scheduled is not None and new > row.scheduled:
                     row.reschedules = (row.reschedules or 0) + 1
                 row.scheduled = new
+            if "next_action" in changes:
+                row.next_action = _clean_scope(changes.pop("next_action"))
+            if "set_aside_on" in changes:
+                new = _coerce_date(changes.pop("set_aside_on"))
+                # parking on a NEW day is the signal the breakdown offer
+                # reads (section 10: "set aside on >= 2 distinct days").
+                # the last counted day lives in its own column because
+                # "bring back" clears set_aside_on - comparing against the
+                # stamp would count a same-day repark twice (sol, #86).
+                # re-stamping a counted day, or clearing, counts nothing
+                if new is not None and new != row.set_aside_counted_on:
+                    row.set_aside_count = (row.set_aside_count or 0) + 1
+                    row.set_aside_counted_on = new
+                row.set_aside_on = new
             for key, value in changes.items():
                 setattr(row, key, value)
             self._touch_plan(db, user_uuid, row.plan_id)

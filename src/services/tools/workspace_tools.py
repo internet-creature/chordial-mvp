@@ -179,6 +179,7 @@ async def _create_task(tool_input: dict, context: ToolContext) -> str:
         pom_estimate=tool_input.get("pom_estimate"),
         helper=tool_input.get("helper"),
         description=tool_input.get("description"),
+        next_action=tool_input.get("next_action"),
         **links,
     )
     return f"created task \"{title}\" (id={row['public_id']})."
@@ -199,7 +200,8 @@ async def _update_task(tool_input: dict, context: ToolContext) -> str:
     for key, store_key in (("new_title", "title"), ("status", "status"),
                            ("priority", "priority"), ("scheduled_date", "scheduled"),
                            ("pom_estimate", "pom_estimate"), ("window", "window"),
-                           ("helper", "helper"), ("description", "description")):
+                           ("helper", "helper"), ("description", "description"),
+                           ("next_action", "next_action")):
         if tool_input.get(key) is not None:
             changes[store_key] = tool_input[key]
     if not changes:
@@ -648,6 +650,10 @@ _TASK_WRITE_PROPS = {
     "pom_estimate": {"type": "number", "description": "Estimated pomodoros."},
     "helper": {"type": "string", "description": "Helper who assigned/nudges it."},
     "description": {"type": "string"},
+    "next_action": {"type": "string",
+                    "description": "The scope: the one-line first piece a "
+                                   "focus block runs on (max 140 chars). "
+                                   "Pass '' to clear."},
 }
 
 LIST_TASKS = _tool(

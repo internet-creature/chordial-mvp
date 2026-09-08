@@ -54,6 +54,7 @@ import {
   quietLine,
   removeLabel,
 } from "../lib/rewind";
+import { bubbleFallback } from "../lib/bubble";
 import {
   rememberScopeSkip,
   runLabel,
@@ -405,7 +406,20 @@ export default function DeerWindow() {
   const doneTasks: DoneTaskRow[] = today?.buckets.done ?? [];
   const asideTasks: TaskRow[] = today?.buckets.set_aside ?? [];
   const todayIso = today?.today ?? null;
-  const runningLabel = focus.label ? splitLabel(focus.label) : null;
+  // the running task's canonical title, from whichever list holds it -
+  // titles may contain ": " themselves, so the label is split against it
+  const runningTitle =
+    typeof focus.task_id === "number"
+      ? ([...openTasks, ...asideTasks, ...doneTasks].find(
+          (t) => t.id === focus.task_id,
+        )?.title ?? null)
+      : null;
+  const runningLabel = focus.label
+    ? splitLabel(focus.label, runningTitle)
+    : null;
+  const minutesToday = Math.floor(
+    (Object.values(focus.banked).reduce((a, b) => a + b, 0) + runSeconds) / 60,
+  );
 
   /** the scoping form is owed when the task has no scope and "just start"
    * wasn't chosen for it today (per-viewer memory; tomorrow it asks again) */
@@ -529,7 +543,13 @@ export default function DeerWindow() {
   async function setAside(task: TaskRow) {
     if (!token || busy) return;
     if (focus.running && focus.task_id === task.id) {
-      await doPause();
+      const stopped = await doPause();
+      if (!stopped) {
+        // a sidecar outage or a refused transition: the clock may still
+        // be counting, so the task stays where it is (sol, #87)
+        showLine("couldn’t stop the clock — she stays on the list");
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -585,7 +605,10 @@ export default function DeerWindow() {
     refreshToday();
   }
 
-  async function doPause(resolution?: Resolution) {
+  /** stop the clock. resolves true only when the sidecar confirms the
+   * clock is no longer running - callers that act on "stopped" (set
+   * aside) must not proceed on a swallowed error */
+  async function doPause(resolution?: Resolution): Promise<boolean> {
     setBusy(true);
     setConfirmingFinish(false);
     setConfirmingPause(false);
@@ -594,8 +617,10 @@ export default function DeerWindow() {
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
       showLine(result.line);
+      return !result.focus.running;
     } catch (err) {
       showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -940,36 +965,37 @@ export default function DeerWindow() {
         {windowControls(false)}
       </div>
 
-      {line && (
-        <div className="deer-bubble">
-          <InlineContent content={line} />
+      <div className="deer-head" data-tauri-drag-region="true">
+        <div
+          className={`deer-self${focus.running ? " watching" : " loafing"}${
+            overtime ? " perked" : ""
+          }${activity?.blocked ? " hushed" : ""}`}
+          aria-hidden="true"
+          data-tauri-drag-region="true"
+        >
+          🦌
         </div>
-      )}
-
-      <div
-        className={`deer-self${focus.running ? " watching" : " loafing"}${
-          overtime ? " perked" : ""
-        }${activity?.blocked ? " hushed" : ""}`}
-        aria-hidden="true"
-        data-tauri-drag-region="true"
-      >
-        🦌
+        <div
+          className={`deer-bubble${line ? " speaking" : ""}`}
+          role="status"
+          aria-live="polite"
+        >
+          <InlineContent
+            content={
+              line ??
+              bubbleFallback({
+                blocked: !!activity?.blocked,
+                drifting: !!activity?.drifting,
+                running: focus.running,
+                overtime,
+                openCount: openTasks.length,
+                doneCount: doneTasks.length,
+                minutesToday,
+              })
+            }
+          />
+        </div>
       </div>
-      <p className="deer-caption">
-        <InlineContent
-          content={
-            activity?.blocked
-              ? "hushed — meeting nearby"
-              : activity?.drifting
-                ? "*ears soft* quiet at the desk — that’s allowed"
-                : focus.running
-                  ? overtime
-                    ? "still here — every extra minute counts"
-                    : "on watch beside you"
-                  : "loafing nearby"
-          }
-        />
-      </p>
 
       {offer &&
         (cardExpanded || offer.frozen ? (
@@ -1233,7 +1259,7 @@ export default function DeerWindow() {
                     }}
                   >
                     <div className="deer-task-head">
-                      <span className="deer-task-title">
+                      <span className="deer-task-title" title={task.title}>
                         {task.title}
                         {task.next_action && !selected && (
                           <span className="deer-task-scope">
@@ -1479,7 +1505,9 @@ export default function DeerWindow() {
                     }}
                   >
                     <div className="deer-task-head">
-                      <span className="deer-task-title">{task.title}</span>
+                      <span className="deer-task-title" title={task.title}>
+                        {task.title}
+                      </span>
                       <span className="deer-task-note">
                         {SCOPE_COPY.asideHeading}
                       </span>

@@ -39,21 +39,43 @@ describe("the run label convention", () => {
   it("joins title and scope with ': '", () => {
     expect(runLabel("outline", " section two ")).toBe("outline: section two");
   });
-  it("splits back on the FIRST ': ' so a scope may carry its own", () => {
-    expect(splitLabel("outline: section two: the hook")).toEqual({
+  it("splits back against the canonical title, so a scope may carry ': '", () => {
+    expect(splitLabel("outline: section two: the hook", "outline")).toEqual({
       title: "outline",
       scope: "section two: the hook",
     });
-    expect(splitLabel("outline")).toEqual({ title: "outline", scope: null });
-    // a colon without the space is part of the title, not a separator
-    expect(splitLabel("10:30 standup")).toEqual({
-      title: "10:30 standup",
+    expect(splitLabel("outline", "outline")).toEqual({
+      title: "outline",
+      scope: null,
+    });
+  });
+  it("preserves titles that contain the delimiter (sol, #87)", () => {
+    // an unscoped task whose TITLE has ": " - nothing to split
+    expect(splitLabel("Client: follow up", "Client: follow up")).toEqual({
+      title: "Client: follow up",
+      scope: null,
+    });
+    // the same task scoped: the split lands after the whole title
+    const label = runLabel("Client: follow up", "draft the email");
+    expect(splitLabel(label, "Client: follow up")).toEqual({
+      title: "Client: follow up",
+      scope: "draft the email",
+    });
+  });
+  it("guesses nothing without the title", () => {
+    expect(splitLabel("Client: follow up")).toEqual({
+      title: "Client: follow up",
+      scope: null,
+    });
+    // a title that isn't a prefix of the label can't be trusted either
+    expect(splitLabel("mix: the hook", "outline")).toEqual({
+      title: "mix: the hook",
       scope: null,
     });
   });
   it("round-trips", () => {
     const label = runLabel("mix", "vocals: comp the chorus");
-    expect(splitLabel(label)).toEqual({
+    expect(splitLabel(label, "mix")).toEqual({
       title: "mix",
       scope: "vocals: comp the chorus",
     });

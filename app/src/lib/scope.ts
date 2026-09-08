@@ -13,12 +13,23 @@ export function runLabel(title: string, scope: string | null | undefined): strin
   return clean ? `${title}: ${clean}` : title;
 }
 
-/** the inverse: the window renders title above and scope beneath the
- * clock by splitting on the FIRST ": " (a scope may contain its own) */
-export function splitLabel(label: string): { title: string; scope: string | null } {
-  const at = label.indexOf(": ");
-  if (at < 0) return { title: label, scope: null };
-  return { title: label.slice(0, at), scope: label.slice(at + 2) || null };
+/** the inverse, done structurally: task titles are unrestricted (a title
+ * may itself contain ": "), so the split needs the canonical title of
+ * the task the clock runs on. with it, the scope is exactly what follows
+ * `"<title>: "`; without it (the task isn't in today's lists) nothing is
+ * guessed - the whole label renders as the title. */
+export function splitLabel(
+  label: string,
+  title?: string | null,
+): { title: string; scope: string | null } {
+  if (title) {
+    if (label === title) return { title, scope: null };
+    const prefix = `${title}: `;
+    if (label.startsWith(prefix)) {
+      return { title, scope: label.slice(prefix.length) || null };
+    }
+  }
+  return { title: label, scope: null };
 }
 
 /** "just start" is remembered per task per local day - a per-viewer

@@ -173,6 +173,7 @@ class WorkspaceStore:
             "next_action": row.next_action,
             "set_aside_on": _iso(row.set_aside_on),
             "set_aside_count": row.set_aside_count or 0,
+            "set_aside_counted_on": _iso(row.set_aside_counted_on),
             "breakdown_offer_dismissed_at": _iso(row.breakdown_offer_dismissed_at),
             "created_at": _iso(row.created_at), "closed_at": _iso(row.closed_at),
         }
@@ -424,10 +425,14 @@ class WorkspaceStore:
             if "set_aside_on" in changes:
                 new = _coerce_date(changes.pop("set_aside_on"))
                 # parking on a NEW day is the signal the breakdown offer
-                # reads (section 10: "set aside on >= 2 distinct days");
-                # re-stamping the same day, or clearing, counts nothing
-                if new is not None and new != row.set_aside_on:
+                # reads (section 10: "set aside on >= 2 distinct days").
+                # the last counted day lives in its own column because
+                # "bring back" clears set_aside_on - comparing against the
+                # stamp would count a same-day repark twice (sol, #86).
+                # re-stamping a counted day, or clearing, counts nothing
+                if new is not None and new != row.set_aside_counted_on:
                     row.set_aside_count = (row.set_aside_count or 0) + 1
+                    row.set_aside_counted_on = new
                 row.set_aside_on = new
             for key, value in changes.items():
                 setattr(row, key, value)

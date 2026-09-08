@@ -3,7 +3,9 @@
 docs/FOCUS_DOGFOOD_DESIGN.md sections 2-4 and 10: `next_action` is the
 one-line scope a focus block runs on; `set_aside_on` parks a task for one
 user-local day without changing its status; `set_aside_count` counts the
-distinct days it was parked (the breakdown offer's signal); and
+distinct days it was parked (the breakdown offer's signal) with
+`set_aside_counted_on` remembering the last day that counted, so a
+same-day set aside -> bring back -> set aside is still one day; and
 `breakdown_offer_dismissed_at` records a declined offer so no device
 repeats it. all nullable - existing rows read as unscoped, not parked.
 
@@ -26,6 +28,8 @@ def upgrade() -> None:
         batch.add_column(sa.Column('set_aside_on', sa.Date(), nullable=True))
         batch.add_column(sa.Column('set_aside_count', sa.Integer(),
                                    nullable=True, server_default='0'))
+        batch.add_column(sa.Column('set_aside_counted_on', sa.Date(),
+                                   nullable=True))
         batch.add_column(sa.Column('breakdown_offer_dismissed_at',
                                    sa.DateTime(), nullable=True))
 
@@ -33,6 +37,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     with op.batch_alter_table('tasks') as batch:
         batch.drop_column('breakdown_offer_dismissed_at')
+        batch.drop_column('set_aside_counted_on')
         batch.drop_column('set_aside_count')
         batch.drop_column('set_aside_on')
         batch.drop_column('next_action')

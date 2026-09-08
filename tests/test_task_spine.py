@@ -100,9 +100,27 @@ def test_set_aside_counts_distinct_days_only(env):
     assert t["set_aside_on"] is None and t["set_aside_count"] == 1
     # a new day is the signal
     t = store.update_task(U1, t["id"], set_aside_on="2026-09-05")
-    assert t["set_aside_count"] == 2
+    assert t["set_aside_count"] == 2 and t["set_aside_counted_on"] == "2026-09-05"
     # set aside is a today decision, never a lifecycle change
     assert t["status"] == "todo" and t["closed_at"] is None
+
+
+def test_clear_then_repark_the_same_day_counts_once(env):
+    """sol, #86: "bring back" clears set_aside_on, so a same-day set aside
+    -> bring back -> set aside must not read as a second distinct day."""
+    store = env
+    t = store.create_task(U1, "flip-flopper", scheduled="2026-09-04")
+    for _ in range(3):
+        t = store.update_task(U1, t["id"], set_aside_on="2026-09-04")
+        t = store.update_task(U1, t["id"], set_aside_on=None)
+    assert t["set_aside_on"] is None
+    assert t["set_aside_count"] == 1
+    assert t["set_aside_counted_on"] == "2026-09-04"
+    # the next day still counts exactly once, however many flips
+    t = store.update_task(U1, t["id"], set_aside_on="2026-09-05")
+    t = store.update_task(U1, t["id"], set_aside_on=None)
+    t = store.update_task(U1, t["id"], set_aside_on="2026-09-05")
+    assert t["set_aside_count"] == 2
 
 
 def test_unknown_task_keys_are_still_rejected(env):
@@ -219,10 +237,18 @@ def test_patch_set_aside_and_the_three_parked_actions(env):
         assert row["set_aside_on"] is None
         assert row["scheduled"] == (today + timedelta(days=1)).isoformat()
 
-        # bring back: just the stamp
+        # bring back: just the stamp - and a change of heart the same day
+        # is still one parked day underneath (the breakdown signal)
         resp = await client.patch(f"/api/v1/tasks/{b['id']}",
                                   json={"set_aside": False}, headers=headers)
         assert (await resp.json())["task"]["set_aside_on"] is None
+        await client.patch(f"/api/v1/tasks/{b['id']}",
+                           json={"set_aside": True}, headers=headers)
+        resp = await client.patch(f"/api/v1/tasks/{b['id']}",
+                                  json={"set_aside": False}, headers=headers)
+        parked_days = {r["title"]: r["set_aside_count"]
+                       for r in env.list_tasks(U1, include_closed=True)}
+        assert parked_days["coming back"] == 1
 
         # let it go: closes it (closed_at stamped), unparked
         resp = await client.patch(f"/api/v1/tasks/{c['id']}",

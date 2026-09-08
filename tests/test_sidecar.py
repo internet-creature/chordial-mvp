@@ -129,6 +129,9 @@ def test_switch_banks_the_previous_run(store):
     assert state["banked"][7] == 600           # ten minutes, kept
     types = [e["type"] for e in store.pending()]
     assert types == ["session.started", "session.ended", "session.started"]
+    # the target rides on the start event (the day digest reads it)
+    assert store.pending()[0]["payload"] == {"task_id": 7, "label": "novel",
+                                             "target_minutes": 25.0}
     ended = store.pending()[1]
     assert ended["payload"]["reason"] == "switched"
     assert ended["payload"]["seconds"] == 600

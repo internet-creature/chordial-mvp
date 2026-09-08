@@ -12,6 +12,7 @@ import type {
   RoomCurrent,
   HistoryRow,
   SendResult,
+  TaskPatch,
   TaskRow,
   TodayPayload,
 } from "./types";
@@ -145,6 +146,21 @@ export function setTaskStatus(
     method: "POST",
     token,
     body: JSON.stringify({ status }),
+  });
+}
+
+/** the shaping seam (docs/FOCUS_DOGFOOD_DESIGN.md §4): scope, reschedule,
+ * status, set aside - any subset in one body. never touches the sidecar
+ * clock; the window pauses first when it must. */
+export function patchTask(
+  token: string,
+  taskId: number,
+  patch: TaskPatch,
+): Promise<{ ok: boolean; task: TaskRow }> {
+  return request(`/api/v1/tasks/${taskId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(patch),
   });
 }
 

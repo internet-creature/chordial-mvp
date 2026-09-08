@@ -1074,3 +1074,19 @@ textarea::placeholder {
 .room.archive .room-log {
   opacity: 0.92;
 }
+
+/* set aside (docs/FOCUS_DOGFOOD_DESIGN.md §2): parked for today, greyed */
+.task-group.muted .task-row {
+  opacity: 0.6;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.task-scope {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}

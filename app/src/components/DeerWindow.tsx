@@ -3,6 +3,7 @@ import {
   ApiError,
   createTask,
   fetchToday,
+  patchTask,
   SERVER_URL,
   setTaskStatus,
 } from "../api/client";
@@ -53,6 +54,16 @@ import {
   quietLine,
   removeLabel,
 } from "../lib/rewind";
+import { bubbleFallback } from "../lib/bubble";
+import {
+  rememberScopeSkip,
+  runLabel,
+  SCOPE_CAP,
+  SCOPE_COPY,
+  scopeSkipped,
+  splitLabel,
+  tomorrowOf,
+} from "../lib/scope";
 import {
   loadSession,
   SESSION_REV_KEY,
@@ -125,6 +136,12 @@ export default function DeerWindow() {
   // select, then start: a click opens a row; only ▸ / start run the clock
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [chipMinutes, setChipMinutes] = useState<number | null>(null);
+  // the scope (§3): the draft in the form, and whether an existing scope
+  // is being re-written in place
+  const [scopeDraft, setScopeDraft] = useState("");
+  const [editingScope, setEditingScope] = useState(false);
+  // the parked section (§2): which set-aside row is open
+  const [asideId, setAsideId] = useState<number | null>(null);
   // the forms: den <-> bar, remembered preference, and "peeking" = the
   // den opened from the bar without stopping the clock
   const [autoBar, setAutoBarState] = useState(() =>
@@ -387,6 +404,30 @@ export default function DeerWindow() {
       ]
     : [];
   const doneTasks: DoneTaskRow[] = today?.buckets.done ?? [];
+  const asideTasks: TaskRow[] = today?.buckets.set_aside ?? [];
+  const todayIso = today?.today ?? null;
+  // the running task's canonical title, from whichever list holds it -
+  // titles may contain ": " themselves, so the label is split against it
+  const runningTitle =
+    typeof focus.task_id === "number"
+      ? ([...openTasks, ...asideTasks, ...doneTasks].find(
+          (t) => t.id === focus.task_id,
+        )?.title ?? null)
+      : null;
+  const runningLabel = focus.label
+    ? splitLabel(focus.label, runningTitle)
+    : null;
+  const minutesToday = Math.floor(
+    (Object.values(focus.banked).reduce((a, b) => a + b, 0) + runSeconds) / 60,
+  );
+
+  /** the scoping form is owed when the task has no scope and "just start"
+   * wasn't chosen for it today (per-viewer memory; tomorrow it asks again) */
+  function needsScope(task: TaskRow): boolean {
+    if (task.next_action) return false;
+    if (!todayIso) return false;
+    return !scopeSkipped(window.localStorage, task.id, todayIso);
+  }
 
   /** today's minutes on a task, live: banked runs + the running clock */
   function taskSeconds(taskId: number): number {
@@ -409,21 +450,141 @@ export default function DeerWindow() {
     }
     setSelectedId(task.id);
     setChipMinutes(lastTarget(window.sessionStorage, task.id, pomMinutes));
+    setScopeDraft(task.next_action ?? "");
+    setEditingScope(false);
+    setAsideId(null);
   }
 
   /** run the clock on a task - if another task's clock is running this
    * IS the switch (the old run banks first) */
-  async function startTask(task: TaskRow, minutes: number) {
+  async function startTask(
+    task: TaskRow,
+    minutes: number,
+    scope: string | null = task.next_action,
+  ) {
     if (busy || (focus.running && focus.task_id === task.id)) return;
     setBusy(true);
     setConfirmingFinish(false);
     try {
-      const result = await startFocus(task.id, task.title, minutes);
+      const result = await startFocus(
+        task.id,
+        runLabel(task.title, scope),
+        minutes,
+      );
       setFocus(result.focus);
       showLine(result.line);
       rememberTarget(window.sessionStorage, task.id, minutes);
       setSelectedId(null);
+      setEditingScope(false);
       setPeeking(false); // a fresh start goes to the bar
+    } catch (err) {
+      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** the ▸ / start path: a task owed its scope opens the form instead
+   * of running blind; everything else starts straight away */
+  function startOrAsk(task: TaskRow, minutes: number) {
+    if (needsScope(task)) {
+      if (selectedId !== task.id) selectTask(task);
+      return;
+    }
+    void startTask(task, minutes);
+  }
+
+  /** the form's "start": save the line, then run the clock with it. the
+   * save is best-effort - a server hiccup must never keep a block from
+   * starting; the label carries the scope regardless */
+  async function saveScopeAndStart(task: TaskRow, minutes: number) {
+    const scope = scopeDraft.trim().slice(0, SCOPE_CAP);
+    if (!scope) {
+      // an empty line is "just start" by another route
+      justStart(task, minutes);
+      return;
+    }
+    if (token) {
+      try {
+        await patchTask(token, task.id, { next_action: scope });
+        refreshToday();
+      } catch {
+        // the clock still starts; the line lives in the run label
+      }
+    }
+    await startTask(task, minutes, scope);
+  }
+
+  /** "just start": no scope today for this task - remembered locally */
+  function justStart(task: TaskRow, minutes: number) {
+    if (todayIso) rememberScopeSkip(window.localStorage, task.id, todayIso);
+    void startTask(task, minutes, null);
+  }
+
+  /** click-to-edit on an existing scope (same PATCH; blank clears it) */
+  async function saveScope(task: TaskRow) {
+    if (!token) return;
+    const scope = scopeDraft.trim().slice(0, SCOPE_CAP) || null;
+    setBusy(true);
+    try {
+      await patchTask(token, task.id, { next_action: scope });
+      setEditingScope(false);
+      refreshToday();
+    } catch (err) {
+      showLine(err instanceof Error ? err.message : "couldn’t save that");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** set aside (§2): a today decision. the running task pauses FIRST -
+   * the patch route never touches the sidecar clock, so this window owns
+   * the ordering (pause banks the run; an open question freezes it) */
+  async function setAside(task: TaskRow) {
+    if (!token || busy) return;
+    if (focus.running && focus.task_id === task.id) {
+      const stopped = await doPause();
+      if (!stopped) {
+        // a sidecar outage or a refused transition: the clock may still
+        // be counting, so the task stays where it is (sol, #87)
+        showLine("couldn’t stop the clock — she stays on the list");
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      await patchTask(token, task.id, { set_aside: true });
+      setSelectedId(null);
+      refreshToday();
+    } catch (err) {
+      showLine(err instanceof Error ? err.message : "couldn’t set that aside");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** the parked row's three doors (§2's table) */
+  async function parkedAction(
+    task: TaskRow,
+    action: "tomorrow" | "bring_back" | "let_go",
+  ) {
+    if (!token || busy || !todayIso) return;
+    const patch =
+      action === "tomorrow"
+        ? {
+            scheduled: tomorrowOf(todayIso),
+            set_aside: false,
+            // "in motion" would otherwise keep showing it tomorrow
+            ...(task.status === "in_progress" ? { status: "todo" } : {}),
+          }
+        : action === "bring_back"
+          ? { set_aside: false }
+          : { status: "deprioritized", set_aside: false };
+    setBusy(true);
+    try {
+      await patchTask(token, task.id, patch);
+      setAsideId(null);
+      refreshToday();
     } catch (err) {
       showLine(err instanceof Error ? err.message : "hm, that didn’t work");
     } finally {
@@ -444,7 +605,10 @@ export default function DeerWindow() {
     refreshToday();
   }
 
-  async function doPause(resolution?: Resolution) {
+  /** stop the clock. resolves true only when the sidecar confirms the
+   * clock is no longer running - callers that act on "stopped" (set
+   * aside) must not proceed on a swallowed error */
+  async function doPause(resolution?: Resolution): Promise<boolean> {
     setBusy(true);
     setConfirmingFinish(false);
     setConfirmingPause(false);
@@ -453,8 +617,10 @@ export default function DeerWindow() {
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
       showLine(result.line);
+      return !result.focus.running;
     } catch (err) {
       showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -686,9 +852,21 @@ export default function DeerWindow() {
             </span>
           ) : (
             <span className="deer-bar-title" data-tauri-drag-region="true">
-              {activity?.blocked
-                ? "hushed — meeting nearby"
-                : (focus.label ?? "on watch beside you")}
+              {activity?.blocked ? (
+                "hushed — meeting nearby"
+              ) : runningLabel ? (
+                <>
+                  {runningLabel.title}
+                  {runningLabel.scope && (
+                    <span className="deer-bar-scope">
+                      {" · "}
+                      {runningLabel.scope}
+                    </span>
+                  )}
+                </>
+              ) : (
+                "on watch beside you"
+              )}
             </span>
           )}
           <span className="deer-bar-fill">
@@ -787,36 +965,39 @@ export default function DeerWindow() {
         {windowControls(false)}
       </div>
 
-      {line && (
-        <div className="deer-bubble">
-          <InlineContent content={line} />
+      <div className="deer-head" data-tauri-drag-region="true">
+        <div
+          className={`deer-self${focus.running ? " watching" : " loafing"}${
+            overtime ? " perked" : ""
+          }${activity?.blocked ? " hushed" : ""}`}
+          aria-hidden="true"
+          data-tauri-drag-region="true"
+        >
+          🦌
         </div>
-      )}
-
-      <div
-        className={`deer-self${focus.running ? " watching" : " loafing"}${
-          overtime ? " perked" : ""
-        }${activity?.blocked ? " hushed" : ""}`}
-        aria-hidden="true"
-        data-tauri-drag-region="true"
-      >
-        🦌
+        <div
+          className={`deer-bubble${line ? " speaking" : ""}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className="deer-bubble-text">
+            <InlineContent
+              content={
+                line ??
+                bubbleFallback({
+                  blocked: !!activity?.blocked,
+                  drifting: !!activity?.drifting,
+                  running: focus.running,
+                  overtime,
+                  openCount: openTasks.length,
+                  doneCount: doneTasks.length,
+                  minutesToday,
+                })
+              }
+            />
+          </span>
+        </div>
       </div>
-      <p className="deer-caption">
-        <InlineContent
-          content={
-            activity?.blocked
-              ? "hushed — meeting nearby"
-              : activity?.drifting
-                ? "*ears soft* quiet at the desk — that’s allowed"
-                : focus.running
-                  ? overtime
-                    ? "still here — every extra minute counts"
-                    : "on watch beside you"
-                  : "loafing nearby"
-          }
-        />
-      </p>
 
       {offer &&
         (cardExpanded || offer.frozen ? (
@@ -891,7 +1072,14 @@ export default function DeerWindow() {
 
       {focus.running && (
         <div className="deer-session">
-          {focus.label && <p className="deer-label">{focus.label}</p>}
+          {runningLabel && (
+            <p className="deer-label" title={focus.label ?? undefined}>
+              {runningLabel.title}
+              {runningLabel.scope && (
+                <span className="deer-label-scope">{runningLabel.scope}</span>
+              )}
+            </p>
+          )}
           <p className={`deer-clock${overtime ? " over" : ""}`}>
             {mmss(runSeconds)}
             {overtime && (
@@ -1065,7 +1253,7 @@ export default function DeerWindow() {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         if (selected && !active) {
-                          void startTask(task, chipMinutes ?? pomMinutes);
+                          startOrAsk(task, chipMinutes ?? pomMinutes);
                         } else {
                           selectTask(task);
                         }
@@ -1073,7 +1261,14 @@ export default function DeerWindow() {
                     }}
                   >
                     <div className="deer-task-head">
-                      <span className="deer-task-title">{task.title}</span>
+                      <span className="deer-task-title" title={task.title}>
+                        {task.title}
+                        {task.next_action && !selected && (
+                          <span className="deer-task-scope">
+                            {task.next_action}
+                          </span>
+                        )}
+                      </span>
                       {active ? (
                         <span className="deer-task-live">running</span>
                       ) : (
@@ -1092,7 +1287,7 @@ export default function DeerWindow() {
                           }
                           onClick={(e) => {
                             e.stopPropagation();
-                            void startTask(
+                            startOrAsk(
                               task,
                               lastTarget(
                                 window.sessionStorage,
@@ -1118,11 +1313,63 @@ export default function DeerWindow() {
                         onClick={(e) => e.stopPropagation()}
                       >
                         {active ? (
-                          <span className="deer-task-note">
-                            this clock is running — pause or finish above
-                          </span>
+                          <>
+                            <span className="deer-task-note">
+                              this clock is running — pause or finish above
+                            </span>
+                            <button
+                              className="deer-aside-btn"
+                              disabled={busy || !token}
+                              onClick={() => setAside(task)}
+                            >
+                              {SCOPE_COPY.setAsideRunning}
+                            </button>
+                          </>
                         ) : (
                           <>
+                            {needsScope(task) || editingScope ? (
+                              // the scoping form (§3): one line, a target,
+                              // start - or just start, remembered for today
+                              <div className="deer-scope-form">
+                                <label className="deer-scope-prompt">
+                                  {SCOPE_COPY.prompt}
+                                  <input
+                                    className="deer-scope-input"
+                                    autoFocus
+                                    value={scopeDraft}
+                                    maxLength={SCOPE_CAP}
+                                    placeholder={SCOPE_COPY.placeholder}
+                                    onChange={(e) =>
+                                      setScopeDraft(e.currentTarget.value)
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        if (editingScope) void saveScope(task);
+                                        else
+                                          void saveScopeAndStart(
+                                            task,
+                                            chipMinutes ?? pomMinutes,
+                                          );
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            ) : (
+                              task.next_action && (
+                                <button
+                                  className="deer-scope-line"
+                                  title={SCOPE_COPY.editScope}
+                                  onClick={() => {
+                                    setScopeDraft(task.next_action ?? "");
+                                    setEditingScope(true);
+                                  }}
+                                >
+                                  ↳ {task.next_action}
+                                </button>
+                              )
+                            )}
                             <div
                               className="deer-chips"
                               role="radiogroup"
@@ -1142,14 +1389,68 @@ export default function DeerWindow() {
                                 </button>
                               ))}
                             </div>
+                            {editingScope ? (
+                              <>
+                                <button
+                                  className="deer-start"
+                                  disabled={busy}
+                                  onClick={() => saveScope(task)}
+                                >
+                                  save
+                                </button>
+                                <button
+                                  className="deer-just-start"
+                                  onClick={() => {
+                                    setEditingScope(false);
+                                    setScopeDraft(task.next_action ?? "");
+                                  }}
+                                >
+                                  never mind
+                                </button>
+                              </>
+                            ) : needsScope(task) ? (
+                              <>
+                                <button
+                                  className="deer-start"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    saveScopeAndStart(
+                                      task,
+                                      chipMinutes ?? pomMinutes,
+                                    )
+                                  }
+                                >
+                                  {focus.running
+                                    ? "switch to this"
+                                    : SCOPE_COPY.start}
+                                </button>
+                                <button
+                                  className="deer-just-start"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    justStart(task, chipMinutes ?? pomMinutes)
+                                  }
+                                >
+                                  {SCOPE_COPY.justStart}
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                className="deer-start"
+                                disabled={busy}
+                                onClick={() =>
+                                  startTask(task, chipMinutes ?? pomMinutes)
+                                }
+                              >
+                                {focus.running ? "switch to this" : "start"}
+                              </button>
+                            )}
                             <button
-                              className="deer-start"
-                              disabled={busy}
-                              onClick={() =>
-                                startTask(task, chipMinutes ?? pomMinutes)
-                              }
+                              className="deer-aside-btn"
+                              disabled={busy || !token}
+                              onClick={() => setAside(task)}
                             >
-                              {focus.running ? "switch to this" : "start"}
+                              {SCOPE_COPY.setAside}
                             </button>
                           </>
                         )}
@@ -1175,11 +1476,88 @@ export default function DeerWindow() {
                 </div>
               </li>
             ))}
-            {openTasks.length === 0 && doneTasks.length === 0 && (
-              <li className="deer-empty">
-                nothing on the list yet — jot one below.
-              </li>
-            )}
+            {asideTasks.map((task) => {
+              // parked for today (§2): greyed, below the wins, still a
+              // door - tomorrow / bring back / let it go
+              const open = asideId === task.id;
+              return (
+                <li key={`aside-${task.id}`}>
+                  <div
+                    className={`deer-task aside${open ? " selected" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${task.title}, set aside`}
+                    aria-expanded={open}
+                    onClick={() => {
+                      setAsideId(open ? null : task.id);
+                      setSelectedId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setAsideId(null);
+                        e.currentTarget.focus();
+                        return;
+                      }
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAsideId(open ? null : task.id);
+                      }
+                    }}
+                  >
+                    <div className="deer-task-head">
+                      <span className="deer-task-title" title={task.title}>
+                        {task.title}
+                      </span>
+                      <span className="deer-task-note">
+                        {SCOPE_COPY.asideHeading}
+                      </span>
+                    </div>
+                    {open && (
+                      <div
+                        className="deer-task-detail deer-aside-actions"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span className="deer-task-note">
+                          {SCOPE_COPY.asideNote}
+                        </span>
+                        <div className="deer-aside-doors">
+                          <button
+                            className="deer-aside-door"
+                            disabled={busy}
+                            onClick={() => parkedAction(task, "tomorrow")}
+                          >
+                            {SCOPE_COPY.tomorrow}
+                          </button>
+                          <button
+                            className="deer-aside-door"
+                            disabled={busy}
+                            onClick={() => parkedAction(task, "bring_back")}
+                          >
+                            {SCOPE_COPY.bringBack}
+                          </button>
+                          <button
+                            className="deer-aside-door letgo"
+                            disabled={busy}
+                            onClick={() => parkedAction(task, "let_go")}
+                          >
+                            {SCOPE_COPY.letGo}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+            {openTasks.length === 0 &&
+              doneTasks.length === 0 &&
+              asideTasks.length === 0 && (
+                <li className="deer-empty">
+                  nothing on the list yet — jot one below.
+                </li>
+              )}
           </ul>
           <form className="deer-add" onSubmit={onAddTask}>
             <input

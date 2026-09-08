@@ -146,8 +146,11 @@ class FocusEngine:
         now = self.clock()
         self.store.insert_run(task_id, label, float(target_minutes),
                               now.isoformat())
+        # target_minutes rides along so the server's day digest can say
+        # "18 min in, target 25" (docs/FOCUS_DOGFOOD_DESIGN.md section 3)
         self.store.enqueue("session.started",
-                           {"task_id": task_id, "label": label},
+                           {"task_id": task_id, "label": label,
+                            "target_minutes": float(target_minutes)},
                            occurred_at=now.isoformat())
         return self.state()
 

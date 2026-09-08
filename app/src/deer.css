@@ -43,38 +43,70 @@
   box-shadow: 0 0 5px rgba(76, 217, 100, 0.8);
 }
 
-.deer-bubble {
-  position: absolute;
-  top: 34px;
-  left: 14px;
-  right: 14px;
-  z-index: 2;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  border-bottom-left-radius: 4px;
-  padding: 8px 11px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  box-shadow: 0 6px 18px -8px var(--shadow);
-  animation: bubble-in 0.3s ease;
+/* the head (dogfood 2026-09-08): a small deer at the top-left and a
+   speech bubble that is always there - no pop-in, no caption under a
+   big emoji. the bubble carries the latest line, else a quiet fact
+   about the day. */
+.deer-head {
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding-left: 2px;
+  flex-shrink: 0;
+  cursor: grab;
 }
 
-@keyframes bubble-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+.deer-bubble {
+  /* an sms bubble: its own pastel (sea glass - nothing else in the room
+     wears it), no hairline, a tail toward the deer */
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(180deg, #e6f8f1, #d2efe6);
+  border-radius: 16px;
+  border-bottom-left-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #3b5a52;
+  box-shadow: 0 6px 16px -9px rgba(60, 110, 95, 0.45);
+}
+
+.deer-bubble::before {
+  /* the tail: a rotated square in the bubble's colour, sitting over the
+     room's gradient (the two-pseudo-element trick needs a flat page) */
+  content: "";
+  position: absolute;
+  left: -5px;
+  bottom: 7px;
+  width: 12px;
+  height: 12px;
+  background: #d2efe6;
+  border-radius: 2px;
+  transform: rotate(45deg) skew(8deg, 8deg);
+}
+
+.deer-bubble-text {
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.deer-bubble.speaking {
+  color: #2d4a42;
 }
 
 .deer-self {
-  font-size: 46px;
+  font-size: 30px;
   line-height: 1;
-  margin-top: 6px;
+  flex-shrink: 0;
+  margin-bottom: 1px;
   transition: transform 0.4s ease;
   /* she is the handle: drag the deer to move the window */
   cursor: grab;
@@ -85,7 +117,7 @@
 }
 
 .deer-self.loafing {
-  transform: translateY(4px) scale(0.96);
+  transform: translateY(2px) scale(0.96);
 }
 
 .deer-self.watching {
@@ -106,17 +138,6 @@
     transition: none;
   }
 
-  .deer-bubble {
-    animation: none;
-  }
-}
-
-.deer-caption {
-  margin: 0;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--ink-faint);
 }
 
 .deer-session {
@@ -539,6 +560,15 @@
   box-shadow: 0 4px 12px -6px var(--shadow);
 }
 
+/* an open row shows the whole name, however long (dogfood 2026-09-08) */
+.deer-task.selected .deer-task-title,
+.deer-task.selected .deer-task-scope {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
 .deer-task-head {
   display: flex;
   align-items: center;
@@ -809,4 +839,177 @@
   .deer-bar-deer {
     transition: none;
   }
+}
+
+/* --- the scope and the parked row (docs/FOCUS_DOGFOOD_DESIGN.md §2-§3) -- */
+
+.deer-task-scope {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-scope-form {
+  flex-basis: 100%;
+}
+
+.deer-scope-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-dim);
+}
+
+.deer-scope-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 9px;
+}
+
+.deer-scope-line {
+  flex-basis: 100%;
+  text-align: left;
+  padding: 2px 4px;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  background: none;
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-scope-line:hover,
+.deer-scope-line:focus-visible {
+  border-color: var(--line);
+  background: var(--bg-hover);
+}
+
+.deer-just-start {
+  font-size: 11px;
+  padding: 3px 6px;
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.deer-just-start:hover:not(:disabled) {
+  color: var(--ink-dim);
+}
+
+.deer-just-start:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.deer-aside-btn {
+  flex-basis: 100%;
+  text-align: left;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.deer-aside-btn:hover:not(:disabled) {
+  color: var(--ink-dim);
+  text-decoration: underline dotted;
+}
+
+.deer-aside-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* parked rows sit below the wins: greyed, still a door */
+.deer-task.aside {
+  opacity: 0.6;
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.deer-task.aside .deer-task-title {
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+
+.deer-task.aside.selected {
+  opacity: 0.85;
+}
+
+.deer-aside-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.deer-aside-doors {
+  display: flex;
+  gap: 6px;
+}
+
+.deer-aside-door {
+  flex: 1;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 4px 4px;
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+
+.deer-aside-door:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--bg-hover);
+}
+
+.deer-aside-door.letgo:hover:not(:disabled) {
+  color: #a3506f;
+}
+
+.deer-aside-door:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* the running label: title above, scope beneath */
+.deer-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  white-space: normal;
+  text-align: center;
+}
+
+.deer-label-scope {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-faint);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deer-bar-scope {
+  font-weight: 500;
+  color: var(--ink-faint);
 }

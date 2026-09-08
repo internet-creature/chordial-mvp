@@ -73,6 +73,18 @@ export interface TaskRow {
   plan_title: string | null;
   helper: string | null;
   description: string | null;
+  /** the scope: the one-line first piece a block runs on (§3) */
+  next_action: string | null;
+  /** the user-local date this task was parked for, or null (§2) */
+  set_aside_on: string | null;
+}
+
+/** PATCH /api/v1/tasks/{id}: any subset; unknown keys are refused */
+export interface TaskPatch {
+  next_action?: string | null;
+  scheduled?: string | null;
+  status?: string;
+  set_aside?: boolean;
 }
 
 /** a finished-today row: a lighter shape than TaskRow (no plan joins) */
@@ -216,6 +228,8 @@ export interface TodayPayload {
     today: TaskRow[];
     in_progress: TaskRow[];
     done: DoneTaskRow[];
+    /** open tasks parked for today - out of the live buckets (§2) */
+    set_aside: TaskRow[];
   };
   focus: {
     active_task_id: number | null;

@@ -46,10 +46,19 @@ function formatBeat(minutes: number): string {
   return `${minutes} minutes`;
 }
 
-function TaskList({ label, tasks }: { label: string; tasks: TaskRow[] }) {
+function TaskList({
+  label,
+  tasks,
+  muted = false,
+}: {
+  label: string;
+  tasks: TaskRow[];
+  /** the set-aside group: parked for today, greyed (§2) */
+  muted?: boolean;
+}) {
   if (tasks.length === 0) return null;
   return (
-    <section className="task-group">
+    <section className={`task-group${muted ? " muted" : ""}`}>
       <h3>{label}</h3>
       <ul>
         {tasks.map((t) => (
@@ -59,6 +68,9 @@ function TaskList({ label, tasks }: { label: string; tasks: TaskRow[] }) {
               aria-hidden="true"
             />
             <span className="task-title">{t.title}</span>
+            {t.next_action && (
+              <span className="task-scope">↳ {t.next_action}</span>
+            )}
             {t.plan_title && <span className="task-plan">{t.plan_title}</span>}
           </li>
         ))}
@@ -160,7 +172,8 @@ export default function Home({
     buckets &&
     buckets.today.length === 0 &&
     buckets.overdue.length === 0 &&
-    buckets.in_progress.length === 0;
+    buckets.in_progress.length === 0 &&
+    buckets.set_aside.length === 0;
 
   const dateLine = today
     ? new Date(`${today.today}T12:00:00`).toLocaleDateString(undefined, {
@@ -187,6 +200,7 @@ export default function Home({
           <TaskList label="in motion" tasks={buckets.in_progress} />
           <TaskList label="today" tasks={buckets.today} />
           <TaskList label="carried over" tasks={buckets.overdue} />
+          <TaskList label="set aside" tasks={buckets.set_aside} muted />
           {empty && (
             <p className="home-empty">
               nothing on the list — a quiet day is allowed.

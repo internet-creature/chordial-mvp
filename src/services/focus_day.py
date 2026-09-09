@@ -39,7 +39,7 @@ from sqlalchemy import func
 
 from config import Config
 from src.database.database import get_db
-from src.database.models import DeviceEvent, Task, User
+from src.database.models import DeviceEvent, Task, TaskSetAside, User
 from src.services.workspace import vocab
 from src.utils.timezone_utils import (
     local_day_bounds,
@@ -50,7 +50,7 @@ from src.utils.timezone_utils import (
 logger = logging.getLogger(__name__)
 
 # the event types the day is made of
-_SESSION_TYPES = ("session.started", "session.ended")
+_SESSION_TYPES = ("session.started", "session.frozen", "session.ended")
 _DAY_TYPES = _SESSION_TYPES + ("focus_block.completed", "drift.detected",
                                "return.detected", "rewind.applied")
 
@@ -108,6 +108,7 @@ class FocusDay:
     banked_by_task: dict = field(default_factory=dict)  # task key -> seconds
     titles: dict = field(default_factory=dict)          # task_id -> canonical title
     running: Optional[Running] = None
+    frozen: Optional[Running] = None    # a stopped clock waiting on a rewind answer
     finished: list = field(default_factory=list)        # titles closed that day
     set_aside: list = field(default_factory=list)       # titles parked that day
     planned: list = field(default_factory=list)         # open today/overdue rows (dicts)
@@ -141,8 +142,8 @@ class FocusDay:
 
     @property
     def happened(self) -> bool:
-        return bool(self.runs or self.running or self.finished
-                    or self.set_aside)
+        return bool(self.runs or self.running or self.frozen
+                    or self.finished or self.set_aside)
 
     def title_of(self, task_id: Optional[int], label: str = "") -> str:
         if task_id is not None and task_id in self.titles:
@@ -203,7 +204,8 @@ def snapshot(user_uuid: str, day: Optional[date] = None) -> FocusDay:
 
         banked_prev: dict = {}        # task key -> seconds, the previous day
         short_starts: dict = {}       # task key -> count of short runs, this day
-        last_session: dict = {}       # device_id -> ("started"|"ended", row, when)
+        last_session: dict = {}       # device_id -> (state, row, when)
+        open_since: dict = {}         # device_id -> when its open run started
         for row in rows:
             payload = row.payload or {}
             when = row.occurred_at or row.applied_at
@@ -231,6 +233,13 @@ def snapshot(user_uuid: str, day: Optional[date] = None) -> FocusDay:
                     banked_prev[key] = banked_prev.get(key, 0) + secs
             elif kind == "session.started":
                 last_session[row.device_id] = ("started", row, when)
+                open_since[row.device_id] = when
+            elif kind == "session.frozen":
+                # the clock stopped without banking (an open rewind
+                # question); the session.ended follows when it resolves.
+                # a started with no transition after it is NOT a running
+                # clock if this came after (sol, #88)
+                last_session[row.device_id] = ("frozen", row, when)
             elif not in_day:
                 continue
             elif kind == "focus_block.completed":
@@ -245,25 +254,35 @@ def snapshot(user_uuid: str, day: Optional[date] = None) -> FocusDay:
         fd.runs.sort(key=lambda r: r.ended_at)
 
         if fd.live:
-            # the most recent open clock across devices is "right now"
-            open_clocks = [(when, row) for state, row, when
-                           in last_session.values() if state == "started"]
-            if open_clocks:
-                when, row = max(open_clocks, key=lambda p: p[0])
+            # the most recent open clock across devices is "right now"; a
+            # frozen one is reported as stopped, not running
+            def _clock(row, when, until) -> Running:
                 payload = row.payload or {}
-                since = to_user_timezone(when, tz)
+                started = open_since.get(row.device_id, when)
+                since = to_user_timezone(started, tz)
                 target = payload.get("target_minutes")
                 target = (int(target) if isinstance(target, (int, float))
                           and not isinstance(target, bool) and target > 0
                           else None)
                 key = _task_key(payload)
-                fd.running = Running(
+                return Running(
                     task_id=key if isinstance(key, int) else None,
                     label=str(payload.get("label") or ""),
                     since=since,
-                    minutes_in=max(0, int((now_local - since)
+                    minutes_in=max(0, int((until - started)
                                           .total_seconds() // 60)),
                     target_minutes=target)
+
+            open_clocks = [(when, row) for state, row, when
+                           in last_session.values() if state == "started"]
+            if open_clocks:
+                when, row = max(open_clocks, key=lambda p: p[0])
+                fd.running = _clock(row, when, utc_now())
+            frozen = [(when, row) for state, row, when
+                      in last_session.values() if state == "frozen"]
+            if frozen and not open_clocks:
+                when, row = max(frozen, key=lambda p: p[0])
+                fd.frozen = _clock(row, when, when)
 
         # the workspace side: every open task, plus the titles of whatever
         # the events named (closed since, or never open today)
@@ -271,6 +290,16 @@ def snapshot(user_uuid: str, day: Optional[date] = None) -> FocusDay:
                      if isinstance(k, int)}
         if fd.running and fd.running.task_id is not None:
             event_ids.add(fd.running.task_id)
+        # set aside is read from the LEDGER, not the task's current stamp:
+        # "tomorrow" and "bring back" clear the stamp, and yesterday's
+        # digest must still say what was consciously parked (sol, #88).
+        # the stamp is unioned in for rows that predate the ledger
+        parked = {tid for (tid,) in db.query(TaskSetAside.task_id).filter(
+            TaskSetAside.user_uuid == user_uuid, TaskSetAside.day == day)}
+        parked_prev = {tid for (tid,) in db.query(TaskSetAside.task_id).filter(
+            TaskSetAside.user_uuid == user_uuid,
+            TaskSetAside.day == day - timedelta(days=1))}
+        event_ids |= parked
         tasks = db.query(Task).filter(
             Task.user_uuid == user_uuid,
             Task.status.in_(vocab.TASK_STATUS_OPEN)).all()
@@ -296,11 +325,12 @@ def snapshot(user_uuid: str, day: Optional[date] = None) -> FocusDay:
         yesterday = day - timedelta(days=1)
         for t in sorted(tasks, key=lambda t: (t.scheduled is None,
                                               t.scheduled or day, t.id)):
-            if t.status not in vocab.TASK_STATUS_OPEN:
-                continue
-            if t.set_aside_on == day:
-                # parked for the day: their call, out of every nudge
+            if t.id in parked or t.set_aside_on == day:
+                # parked for the day: their call, out of every nudge -
+                # listed even if it has since closed or been moved
                 fd.set_aside.append(t.title)
+                continue
+            if t.status not in vocab.TASK_STATUS_OPEN:
                 continue
             on_list = t.scheduled is not None and t.scheduled <= day
             banked_today = fd.banked_by_task.get(t.id, 0)
@@ -320,7 +350,14 @@ def snapshot(user_uuid: str, day: Optional[date] = None) -> FocusDay:
                     short_starts.get(t.id, 0) >= SHORT_STARTS_THRESHOLD:
                 signals.append(f"{short_starts[t.id]} short starts today, "
                                "no first piece named")
+            # "on the list two days": due by yesterday AND already existing
+            # by the start of today AND not parked yesterday - a task
+            # created (or backdated) today, or one consciously set aside
+            # yesterday, was not waiting on yesterday's list (sol, #88).
+            # a backdated `scheduled` on an older task is invisible here
             if (t.scheduled is not None and t.scheduled <= yesterday
+                    and t.created_at is not None and t.created_at < day_start
+                    and t.id not in parked_prev
                     and not banked_today and not banked_prev.get(t.id, 0)):
                 signals.append("on the list two days, untouched")
             if signals:
@@ -410,6 +447,11 @@ def render(fd: FocusDay) -> Optional[str]:
             lines.append(f"right now: clock running on {_q(r.label)} - "
                          f"{r.minutes_in} min in{target} "
                          f"(since {_clock(r.since)})")
+        elif fd.frozen:
+            r = fd.frozen
+            lines.append(f"right now: clock stopped on {_q(r.label)} at "
+                         f"{r.minutes_in} min, unbanked - a rewind question "
+                         "is waiting for their answer")
         elif fd.runs:
             last = fd.runs[-1]
             lines.append(f"last run ended {fd.idle_minutes} min ago "

@@ -375,6 +375,7 @@ class ChordialContext:
         # check-in carries no posture and keeps its exact bytes.
         posture_extras: dict = {}
         prelude: Optional[str] = None
+        today = None
         if stimulus.extras.get("beat") == "morning":
             posture, first_thing, prelude = await asyncio.to_thread(
                 self._morning_posture, user_uuid)
@@ -383,10 +384,14 @@ class ChordialContext:
         elif briefing_kind == "scheduled_checkin":
             # every other tick is block-aware (§5.3): the day's snapshot
             # picks mid_block / stuck / untouched / between / wrapped /
-            # quiet_day, and the prompt renders that one shape
-            posture, detail = await asyncio.to_thread(
-                self._day_posture, user_uuid)
-            if posture:
+            # quiet_day, and the prompt renders that one shape. ONE
+            # snapshot: the digest below renders from the same read, so
+            # the posture and the ambient block can never disagree about
+            # whether a clock is running (sol, #88)
+            today = await asyncio.to_thread(self._day_snapshot, user_uuid)
+            if today is not None:
+                from src.services import focus_day
+                posture, detail = focus_day.checkin_posture(today)
                 posture_extras = {"checkin_posture": posture,
                                   "posture_detail": detail}
 
@@ -395,6 +400,7 @@ class ChordialContext:
             stream_id=stimulus.stream_id,
             include_agenda=(briefing_kind != "introduction"),
             prelude=prelude,
+            today=today,
         )
         if briefing_kind == "scheduled_checkin":
             # where this word lands, and whether they're there (§5.2)
@@ -460,23 +466,25 @@ class ChordialContext:
                              "without")
         return morning_posture(first_thing), first_thing, yesterday
 
-    def _day_posture(self, user_uuid: str) -> tuple:
-        """(posture, detail) for a follow-through tick, from the day's
-        snapshot (§5.3). guarded: any failure is (None, {}) - the plain
-        check-in, byte-identical to before."""
+    @staticmethod
+    def _day_snapshot(user_uuid: str):
+        """today's FocusDay for a follow-through tick, guarded: any
+        failure is None - no posture (the plain check-in, byte-identical
+        to before) and no digest."""
         try:
             from src.services import focus_day
 
-            return focus_day.checkin_posture(focus_day.snapshot(user_uuid))
+            return focus_day.snapshot(user_uuid)
         except Exception:
-            logger.exception("day posture failed for %s; plain check-in",
+            logger.exception("day snapshot failed for %s; plain check-in",
                              user_uuid)
-            return None, {}
+            return None
 
     def _compose_ambient(self, user_uuid: str,
                          stream_id: Optional[str] = None,
                          include_agenda: bool = True,
-                         prelude: Optional[str] = None) -> Optional[str]:
+                         prelude: Optional[str] = None,
+                         today=None) -> Optional[str]:
         """the volatile 'now' zone, shaped by the room the turn is in.
         daily rooms hydrate from the day-shaped past (the previous
         daily/legacy summary - never a retro that happened to close last)
@@ -510,17 +518,20 @@ class ChordialContext:
                 parts.append(digest)
             # the day so far (§5.1): what the desk has seen - banked runs,
             # the clock, finishes, drifts - on ticks AND user turns, so she
-            # knows the day when you talk to her. guarded on its own
+            # knows the day when you talk to her. a tick passes the
+            # snapshot its posture came from; a user turn reads one here.
+            # guarded on its own
             if include_agenda:
                 try:
                     from src.services import focus_day
-                    today = focus_day.digest(user_uuid)
+                    day_digest = (focus_day.render(today) if today is not None
+                                  else focus_day.digest(user_uuid))
                 except Exception:
                     logger.exception("focus day digest failed; briefing "
                                      "continues without")
-                    today = None
-                if today:
-                    parts.append(today)
+                    day_digest = None
+                if day_digest:
+                    parts.append(day_digest)
             # the arc's posture (phase 6c): present only once quiet has
             # been EARNED - untapered users (every fresh user) get their
             # exact pre-6c prompt bytes. guarded on its own: this line is

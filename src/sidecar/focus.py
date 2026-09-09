@@ -206,6 +206,15 @@ class FocusEngine:
     def _freeze(self, active: dict, reason: str) -> dict:
         now = self.clock()
         self.store.freeze_run(active["id"], now.isoformat(), reason)
+        # the server must see the clock STOP: nothing banks until the
+        # correction resolves, but a session.started with no transition
+        # after it reads as a running clock (the day digest would report
+        # mid-block for hours). the ended event follows from close_frozen
+        self.store.enqueue(
+            "session.frozen",
+            {"task_id": active["task_id"], "label": active["label"],
+             "reason": reason},
+            occurred_at=now.isoformat())
         return {"frozen": True, "run_id": active["id"],
                 "task_id": active["task_id"], "label": active["label"],
                 "reason": reason, "frozen_at": now.isoformat()}

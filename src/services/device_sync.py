@@ -57,6 +57,9 @@ KNOWN_EVENT_TYPES = frozenset({
     "drift.detected",
     "return.detected",
     "session.started",
+    # a run frozen by an open rewind question: the clock stopped, nothing
+    # banked yet (the session.ended follows once the question resolves)
+    "session.frozen",
     "session.ended",
     # rewind (docs/REWIND_DESIGN.md section 7): offered carries contested
     # LENGTH only - candidate timestamps stay on-device

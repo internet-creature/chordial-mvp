@@ -31,8 +31,8 @@ from typing import Any, Optional
 from sqlalchemy.exc import IntegrityError
 
 from src.database.database import get_db
-from src.database.models import (Plan, Goal, Task, Cycle, CycleBaseline,
-                                 Win, Checkin, Note, Occasion)
+from src.database.models import (Plan, Goal, Task, TaskSetAside, Cycle,
+                                 CycleBaseline, Win, Checkin, Note, Occasion)
 from src.services.workspace import vocab
 from src.utils.timezone_utils import utc_now
 
@@ -433,6 +433,14 @@ class WorkspaceStore:
                 if new is not None and new != row.set_aside_counted_on:
                     row.set_aside_count = (row.set_aside_count or 0) + 1
                     row.set_aside_counted_on = new
+                # the durable history (sol, #88): a past day's digest reads
+                # the ledger, never this stamp. unique per (task, day), so
+                # a same-day repark is one row
+                if new is not None and not db.query(TaskSetAside.id).filter(
+                        TaskSetAside.task_id == row.id,
+                        TaskSetAside.day == new).first():
+                    db.add(TaskSetAside(user_uuid=user_uuid, task_id=row.id,
+                                        day=new, created_at=utc_now()))
                 row.set_aside_on = new
             for key, value in changes.items():
                 setattr(row, key, value)

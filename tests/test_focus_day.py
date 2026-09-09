@@ -27,6 +27,7 @@ from src.database.models import (  # noqa: E402
     DeviceEvent,
     PlatformIdentity,
     Task,
+    TaskSetAside,
     User,
 )
 from src.managers.user_manager import UserManager  # noqa: E402
@@ -42,6 +43,7 @@ from src.services.orchestration import ChordialContext, presence_line  # noqa: E
 from src.services.prompt_service import PromptService  # noqa: E402
 from src.services.workspace import agenda as agenda_mod  # noqa: E402
 from src.services.workspace.agenda import WorkspaceAgenda  # noqa: E402
+from src.services.workspace.store import WorkspaceStore  # noqa: E402
 from src.services.pulse_wiring import (  # noqa: E402
     ChordialStimulusFactory,
     checkin_rhythm,
@@ -246,6 +248,57 @@ def test_digest_is_guarded(db, monkeypatch):
     assert focus_day.breakdown_flags(U1) == {}
 
 
+def test_a_frozen_run_is_a_stopped_clock_not_a_running_one(db, device):
+    """sol, #88: pause/finish/switch under an open rewind question freezes
+    the sidecar run without banking. the started event alone would read
+    as mid-block all afternoon; the frozen transition says the clock
+    stopped, and the ended that follows on resolution closes it."""
+    t = task(db, "practice piano")
+    event(db, device, "session.started", local(14, 0), task_id=t,
+          label="practice piano", target_minutes=25)
+    event(db, device, "session.frozen", local(14, 24), task_id=t,
+          label="practice piano", reason="paused")
+    fd = snapshot(U1)
+    assert fd.running is None
+    assert fd.frozen.label == "practice piano" and fd.frozen.minutes_in == 24
+    assert checkin_posture(fd)[0] == "untouched"
+    assert ('right now: clock stopped on "practice piano" at 24 min, '
+            "unbanked - a rewind question is waiting") in render(fd)
+    # the answer arrives: the ended banks at the freeze instant
+    ran(db, device, t, "practice piano", 14, local(14, 24))
+    fd = snapshot(U1)
+    assert fd.frozen is None and fd.running is None
+    assert fd.banked_seconds == 14 * 60
+    assert checkin_posture(fd)[0] == "between"
+    # a new start after the freeze is running again
+    event(db, device, "session.started", local(15, 0), task_id=t,
+          label="practice piano")
+    assert snapshot(U1).running is not None
+
+
+def test_yesterdays_set_aside_survives_tomorrow_and_bring_back(db):
+    """sol, #88: the parked stamp is mutable - "tomorrow" and "bring back"
+    clear it - so a past day reads the ledger the store writes."""
+    store = WorkspaceStore()
+    t = store.create_task(U1, "clean desk", scheduled=TODAY)
+    yesterday = TODAY - timedelta(days=1)
+    store.update_task(U1, t["id"], set_aside_on=yesterday)
+    # "bring back" clears the stamp; a later "tomorrow" moves the date
+    store.update_task(U1, t["id"], set_aside_on=None)
+    store.update_task(U1, t["id"], scheduled=TODAY + timedelta(days=1))
+    assert snapshot(U1, yesterday).set_aside == ["clean desk"]
+    assert snapshot(U1).set_aside == []
+    # and a same-day repark is one ledger row
+    store.update_task(U1, t["id"], set_aside_on=TODAY)
+    store.update_task(U1, t["id"], set_aside_on=None)
+    store.update_task(U1, t["id"], set_aside_on=TODAY)
+    with db() as s:
+        days = [r.day for r in s.query(TaskSetAside).filter(
+            TaskSetAside.task_id == t["id"]).order_by(TaskSetAside.day)]
+    assert days == [yesterday, TODAY]
+    assert snapshot(U1).set_aside == ["clean desk"]
+
+
 # --- the flags (§10.2) -------------------------------------------------------------
 
 
@@ -254,8 +307,21 @@ def test_each_signal_flags_and_dismissed_or_parked_rows_never_do(db, device):
     parked = task(db, "parked twice", set_aside_count=2)
     unscoped = task(db, "unscoped false starts")
     scoped = task(db, "scoped false starts", next_action="first para")
-    stale = task(db, "untouched two days", scheduled=TODAY - timedelta(days=1))
-    fresh = task(db, "new overdue", scheduled=TODAY - timedelta(days=1))
+    stale = task(db, "untouched two days", scheduled=TODAY - timedelta(days=1),
+                 created_at=local(9, 0, days=-1))
+    fresh = task(db, "new overdue", scheduled=TODAY - timedelta(days=1),
+                 created_at=local(9, 0, days=-1))
+    # due yesterday but created today: it was never on yesterday's list
+    backdated = task(db, "backdated today", scheduled=TODAY - timedelta(days=1),
+                     created_at=local(8, 0))
+    # consciously parked yesterday: not waiting on that list either
+    was_parked = task(db, "parked yesterday", scheduled=TODAY - timedelta(days=2),
+                      created_at=local(9, 0, days=-2))
+    with db() as s:
+        s.add(TaskSetAside(user_uuid=U1, task_id=was_parked,
+                           day=TODAY - timedelta(days=1),
+                           created_at=local(9, 0, days=-1)))
+        s.commit()
     dismissed = task(db, "dismissed", reschedules=3,
                      breakdown_offer_dismissed_at=local(8, 0))
     today_parked = task(db, "parked today", reschedules=3, set_aside_on=TODAY)
@@ -269,7 +335,8 @@ def test_each_signal_flags_and_dismissed_or_parked_rows_never_do(db, device):
     assert flags[parked] == ["set aside on 2 days"]
     assert flags[unscoped] == ["2 short starts today, no first piece named"]
     assert flags[stale] == ["on the list two days, untouched"]
-    for calm in (scoped, fresh, dismissed, today_parked):
+    for calm in (scoped, fresh, dismissed, today_parked, backdated,
+                 was_parked):
         assert calm not in flags
 
 
@@ -414,6 +481,29 @@ def test_the_morning_brief_wraps_yesterday(db, device):
     assert ambient.index("yesterday, Mon") < ambient.index("today so far")
     assert '"practice piano" 5 min' in ambient
     assert ambient.endswith("phone-sized.")
+
+
+def test_a_tick_reads_one_snapshot_for_posture_and_digest(db, device,
+                                                          monkeypatch):
+    """sol, #88: a start between two reads would make the posture say
+    mid-block while the ambient block says idle. one read, both outputs."""
+    t = task(db, "practice piano")
+    event(db, device, "session.started", local(15, 14), task_id=t,
+          label="practice piano: scales", target_minutes=25)
+    real = focus_day.snapshot
+    calls = []
+
+    def counting(*a, **k):
+        calls.append(a)
+        return real(*a, **k)
+    monkeypatch.setattr(focus_day, "snapshot", counting)
+    briefing = enrich("scheduled_tick", beat="checkin", presence="active")
+    assert len(calls) == 1
+    assert briefing.extras["checkin_posture"] == "mid_block"
+    assert "right now: clock running" in briefing.ambient_context
+    calls.clear()
+    enrich("user_message")
+    assert len(calls) == 1
 
 
 def test_a_failing_snapshot_costs_the_posture_never_the_tick(db, monkeypatch):

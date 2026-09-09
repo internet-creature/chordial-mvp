@@ -73,6 +73,7 @@ class HelperAgent:
                 # the plain check-in, byte-identical to before
                 posture=briefing.extras.get("checkin_posture"),
                 first_thing=briefing.extras.get("first_thing"),
+                posture_detail=briefing.extras.get("posture_detail"),
             )
             turn_kind = "scheduled"
         else:

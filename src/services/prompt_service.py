@@ -188,6 +188,111 @@ _INTRO_SHARED_GUIDANCE = (
 )
 
 
+# the day postures (docs/FOCUS_DOGFOOD_DESIGN.md §5.3, §10.2): instruction
+# copy, not vel's voice. chosen server-side in src/services/focus_day.py;
+# rendered here, one shape per tick. the cross-cutting lines the plain
+# check-in always carried stay, plus one: the numbers are context, not
+# content.
+_DAY_POSTURES = frozenset({"mid_block", "stuck", "untouched", "between",
+                           "wrapped", "quiet_day"})
+_DAY_CROSS_CUTTING = (
+    "- be aware of the time without always stating it",
+    "- reference recent conversation if relevant",
+    "- the numbers are context, not content: you're a companion who "
+    "happened to notice, never a dashboard. no streaks, no scores",
+    "- keep it short",
+)
+
+
+def _day_instruction(who: str, posture: str, detail: dict) -> str:
+    opener = ("this is a scheduled check-in (the user hasn't just messaged "
+              "you). ")
+    if posture == "mid_block":
+        label = detail.get("label") or "a task"
+        minutes = detail.get("minutes_in")
+        target = detail.get("target_minutes")
+        where = f'"{label}"'
+        if isinstance(minutes, int):
+            where += f", {minutes} min in"
+            if target:
+                where += f" of a {target}-min target"
+        return "\n".join((
+            f"{who} is mid-block right now: {where}. this is a word from "
+            "the doorway, not a check-in:",
+            "- at most one light line, nothing that needs answering, no "
+            "clock narration",
+            "- if nothing is worth saying, say nothing: reply with an empty "
+            "message and it stays unsent. that is a fine outcome",
+            _DAY_CROSS_CUTTING[2],
+        ))
+    if posture == "stuck":
+        title = detail.get("title") or "one task"
+        signals = ", ".join(detail.get("signals") or ()) or "it keeps waiting"
+        return "\n".join((
+            opener + f'no clock is running, and "{title}" keeps waiting '
+            f"({signals}). write a brief, warm line to {who}:",
+            "- name it once, lightly, as the plan's fault: the piece is too "
+            "big, never the person",
+            "- offer pip to shrink it into a first piece - one line, one "
+            "offer, and nothing else to nudge on",
+            *_DAY_CROSS_CUTTING,
+        ))
+    if posture == "untouched":
+        first = detail.get("first") or {}
+        title = first.get("title")
+        piece = first.get("next_action")
+        if title:
+            offer = f'- offer ONE first block - "{title}"'
+            if piece:
+                offer += f' (first piece: "{piece}")'
+            offer += (" - as an invitation, one tap away in the companion "
+                      "window. don't list the day")
+        else:
+            offer = ("- offer ONE first block from what's planned (above) - "
+                     "the carried-over one, or the smallest - as an "
+                     "invitation, one tap away in the companion window. "
+                     "don't list the day")
+        return "\n".join((
+            opener + "nothing has started yet today, and the day has a "
+            f"plan (above). write a brief, warm line to {who}:",
+            offer,
+            *_DAY_CROSS_CUTTING,
+        ))
+    if posture == "between":
+        idle = detail.get("idle_minutes")
+        since = (f"the clock has been idle {idle} min"
+                 if isinstance(idle, int) else "the clock is idle")
+        return "\n".join((
+            opener + f"{who} has banked work today and {since} (what "
+            f"landed is above). write a brief, warm line:",
+            "- name what actually landed, specifically - never \"how's it "
+            "going\" in the abstract",
+            "- offer the next piece, or a smaller one",
+            *_DAY_CROSS_CUTTING,
+        ))
+    if posture == "wrapped":
+        why = ("it's evening" if detail.get("evening")
+               else "the day's plan is done")
+        return "\n".join((
+            opener + f"{why}, and today banked something (above). settle "
+            f"the day with {who}:",
+            "- what landed, in a line; no next-thing pressure, no tomorrow "
+            "yet",
+            *_DAY_CROSS_CUTTING,
+        ))
+    # quiet_day: the old shape, grounded in the day so far if there is one
+    return "\n".join((
+        opener + "nothing is planned and nothing has been banked today. "
+        f"write a brief, warm, natural message to {who}:",
+        "- be aware of the time without always stating it",
+        "- reference recent conversation if relevant",
+        "- ask something open-ended, or offer a gentle nudge - grounded in "
+        "the day so far, if there is one",
+        _DAY_CROSS_CUTTING[2],
+        "- keep it short",
+    ))
+
+
 class PromptService:
     """builds cache-aware AIRequests for a persona's ai interactions."""
 
@@ -542,11 +647,17 @@ class PromptService:
 
     @staticmethod
     def _scheduled_instruction(who: str, posture: Optional[str],
-                               first_thing: Optional[str]) -> str:
+                               first_thing: Optional[str],
+                               detail: Optional[dict] = None) -> str:
         """the synthetic turn's instruction, by posture. the plain check-in
         is the pre-§13 text verbatim (warm caches, and the tests that pin
         it). the morning postures are instruction copy, not vel's voice -
-        her voice stays in the persona block."""
+        her voice stays in the persona block. the day postures (§5.3) are
+        chosen server-side from the focus day snapshot; `detail` carries
+        the few facts the instruction names (the label, the minutes)."""
+        detail = detail or {}
+        if posture in _DAY_POSTURES:
+            return _day_instruction(who, posture, detail)
         if posture in ("morning_first", "morning_open"):
             lines = [
                 f"this is the morning brief - {who} hasn't messaged you yet "
@@ -592,15 +703,17 @@ class PromptService:
         ambient_context: Optional[str] = None,
         posture: Optional[str] = None,
         first_thing: Optional[str] = None,
+        posture_detail: Optional[dict] = None,
     ) -> AIRequest:
         """build the request for a proactive check-in. all history is stable;
         a synthetic 'now' turn carries the generation instructions (plus any
         trailing action events and the ambient agenda context).
 
-        `posture` (docs/FOCUS_DOGFOOD_DESIGN.md §13.3) picks the instruction:
-        None is the plain check-in, byte-identical to before; the morning
-        postures write the day's opener, pointing at `first_thing` when the
-        day has one."""
+        `posture` (docs/FOCUS_DOGFOOD_DESIGN.md §5.3, §13.3) picks the
+        instruction: None is the plain check-in, byte-identical to before;
+        the morning postures write the day's opener, pointing at
+        `first_thing` when the day has one; the day postures read
+        `posture_detail` for the label and minutes they name."""
         system = await self._build_system_blocks(
             user_name, user_uuid, user_timezone, user_pronouns
         )
@@ -621,7 +734,8 @@ class PromptService:
                 f"[current time - {now_line}]\n"
                 f"{actions_block}"
                 f"{ambient_block}"
-                + self._scheduled_instruction(who, posture, first_thing)
+                + self._scheduled_instruction(who, posture, first_thing,
+                                              posture_detail)
             ),
         ))
 

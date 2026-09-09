@@ -312,11 +312,16 @@ class ChordialStimulusFactory:
         platforms: Optional[List[str]] = None,
         now=aware_utc_now,
         presence=None,
+        idle_of=None,
     ):
         self.user_manager = user_manager
         self.platforms = platforms
         self._now = now
         self.presence = presence
+        # optional: callable(user_uuid) -> idle seconds at the desk, or
+        # None. rides into the briefing so the idle presence line can say
+        # how long (docs/FOCUS_DOGFOOD_DESIGN.md §5.2)
+        self.idle_of = idle_of
 
     def _presence_of(self, user_uuid: str) -> str:
         """the routing trichotomy, guarded: a broken presence source must
@@ -331,7 +336,20 @@ class ChordialStimulusFactory:
             return "absent"
         return state if state in ("active", "idle") else "absent"
 
-    async def _resolve_target(self, user_uuid: str) -> Optional[tuple]:
+    def _idle_minutes_of(self, user_uuid: str) -> Optional[int]:
+        if self.idle_of is None:
+            return None
+        try:
+            seconds = self.idle_of(user_uuid)
+        except Exception:
+            logger.exception("idle lookup failed for %s", user_uuid)
+            return None
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            return None
+        return max(0, int(seconds // 60))
+
+    async def _resolve_target(self, user_uuid: str,
+                              state: Optional[str] = None) -> Optional[tuple]:
         """(platform, target_id) for a proactive send, presence first:
 
         active -> the desktop (falling back to any live link only if the
@@ -340,7 +358,8 @@ class ChordialStimulusFactory:
         on screen) rather than going silent; absent -> the messaging
         platforms only - the app is closed, and a send there could never
         confirm."""
-        state = self._presence_of(user_uuid)
+        if state is None:
+            state = self._presence_of(user_uuid)
         active = EventLog(user_uuid).active_platform()
         if state == "active":
             return await self.user_manager.resolve_delivery_identity(
@@ -365,7 +384,8 @@ class ChordialStimulusFactory:
         if rhythm.kind == "curation_due":
             return FiringPlan(key=key, kind=rhythm.kind, due_at=decision.due_at)
 
-        target = await self._resolve_target(stream_id)
+        state = self._presence_of(stream_id)
+        target = await self._resolve_target(stream_id, state)
         if target is None:
             logger.debug("no deliverable platform for user %s, skipping", stream_id)
             return None
@@ -378,8 +398,13 @@ class ChordialStimulusFactory:
             target=DeliveryTarget(platform=platform, target_id=platform_user_id),
             reason=decision.reason,
             # which beat this is (§13): the gates and the prompt's posture
-            # both read it; the rhythm id's family names it
-            extras={"beat": beats.beat_of(rhythm.rhythm_id)},
+            # both read it; the rhythm id's family names it. presence rides
+            # along (§5.2) so the briefing can say whether they're at the
+            # desk - the same reading that just chose the target
+            extras={"beat": beats.beat_of(rhythm.rhythm_id),
+                    "presence": state,
+                    "idle_minutes": (self._idle_minutes_of(stream_id)
+                                     if state == "idle" else None)},
             # if the user speaks between this plan and the stream lock, the
             # check-in is stale: cancel before generation. USER-level on
             # purpose (not the stimulus stream): with rooms, a message in
@@ -422,7 +447,9 @@ class ChordialStimulusFactory:
             reason=plan.reason,
             precondition=plan.precondition,
             extras={"user_id": user_uuid,
-                    "beat": plan.extras.get("beat", CHECKIN_RHYTHM)},
+                    "beat": plan.extras.get("beat", CHECKIN_RHYTHM),
+                    "presence": plan.extras.get("presence"),
+                    "idle_minutes": plan.extras.get("idle_minutes")},
         )
 
 
@@ -435,6 +462,7 @@ def build_pulse(
     store=None,
     now=aware_utc_now,
     presence=None,
+    idle_of=None,
 ) -> Pulse:
     """chordial's ambient loop: five-minute cycles, per-user unified recency,
     the don't-nag gate stack (onboarding -> quiet hours -> cadence, first
@@ -513,7 +541,8 @@ def build_pulse(
             morning_time=morning_time,
         ),
         factory=ChordialStimulusFactory(user_manager, platforms=platforms,
-                                        now=now, presence=presence),
+                                        now=now, presence=presence,
+                                        idle_of=idle_of),
         engine=orchestrator,
         store=store or InMemoryPulseStore(),
         # rhythm keys are USERS: recency anchors and gate arithmetic must

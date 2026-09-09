@@ -77,6 +77,10 @@ export interface TaskRow {
   next_action: string | null;
   /** the user-local date this task was parked for, or null (§2) */
   set_aside_on: string | null;
+  /** the evidence nudge (§10.2): this row keeps waiting - moved twice,
+   *  parked on two days, short starts without a scope, untouched two days.
+   *  server-computed; the chip that renders it is the ask-pip slice */
+  needs_breakdown?: boolean;
 }
 
 /** PATCH /api/v1/tasks/{id}: any subset; unknown keys are refused */

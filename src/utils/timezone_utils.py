@@ -164,3 +164,18 @@ def is_within_quiet_hours(local_hour: int, quiet_start: int, quiet_end: int) -> 
 
     # same-day window, e.g. 1 -> 5
     return quiet_start <= local_hour < quiet_end
+
+
+def local_day_bounds(day, tz_name: str) -> tuple:
+    """the naive-utc half-open interval [start, end) covering one user-local
+    calendar day - the reverse of to_user_timezone, for range queries over
+    utc-stamped rows ("everything that happened today, their today"). dst
+    transitions are handled by pytz's localize, so a 23- or 25-hour day
+    is exactly as long as it really was."""
+    from datetime import datetime, timedelta, time as _time
+
+    tz = _resolve_timezone(tz_name)
+    start = tz.localize(datetime.combine(day, _time.min))
+    end = tz.localize(datetime.combine(day + timedelta(days=1), _time.min))
+    return (start.astimezone(pytz.UTC).replace(tzinfo=None),
+            end.astimezone(pytz.UTC).replace(tzinfo=None))

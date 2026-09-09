@@ -131,6 +131,19 @@ class AppInterface(BaseInterface):
                 return "active"
         return "idle"
 
+    def idle_seconds(self, user_uuid: str) -> Optional[float]:
+        """how long the desk has been idle, by its freshest live reporter:
+        the SMALLEST idle among surfaces still heartbeating (the person is
+        as present as their most-attended screen). None when nothing is
+        connected or no surface reports idleness."""
+        if not self._subscribers.get(user_uuid):
+            return None
+        now = time.monotonic()
+        idles = [idle for stamp, idle in
+                 (self._presence.get(user_uuid) or {}).values()
+                 if idle is not None and now - stamp <= _PRESENCE_STALE_SECONDS]
+        return min(idles) if idles else None
+
     @staticmethod
     def drain(queue: asyncio.Queue) -> list[dict]:
         """everything currently in a queue, without waiting."""

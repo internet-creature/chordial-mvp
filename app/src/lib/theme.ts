@@ -7,6 +7,10 @@ export type Theme = "dark" | "light";
 export const THEME_KEY = "chordial.theme";
 export const THEME_EVENT = "chordial:theme";
 
+// Keep an explicit choice for this window even if browser storage is full or
+// disabled. A later choice from another window replaces it via storage events.
+const sessionChoices = new WeakMap<Window, Theme>();
+
 export function isTheme(value: unknown): value is Theme {
   return value === "dark" || value === "light";
 }
@@ -55,7 +59,7 @@ export function applyTheme(root: HTMLElement, theme: Theme): void {
 /** the theme this window should show right now */
 export function currentTheme(win: Window): Theme {
   return resolveTheme(
-    readTheme(safeStorage(win)),
+    sessionChoices.get(win) ?? readTheme(safeStorage(win)),
     systemTheme(win.matchMedia?.bind(win)),
   );
 }
@@ -63,6 +67,7 @@ export function currentTheme(win: Window): Theme {
 /** choose a theme: store it, apply it here, and tell this window's
  * listeners. other windows hear the storage event. */
 export function setTheme(win: Window, theme: Theme): void {
+  sessionChoices.set(win, theme);
   saveTheme(safeStorage(win), theme);
   applyTheme(win.document.documentElement, theme);
   win.dispatchEvent(new Event(THEME_EVENT));
@@ -81,7 +86,10 @@ export function watchTheme(
   };
   apply();
   const storage = (event: StorageEvent) => {
-    if (event.key === THEME_KEY || event.key === null) apply();
+    if (event.key === THEME_KEY || event.key === null) {
+      sessionChoices.delete(win);
+      apply();
+    }
   };
   const media = win.matchMedia?.("(prefers-color-scheme: dark)");
   win.addEventListener("storage", storage);

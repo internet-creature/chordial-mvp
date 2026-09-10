@@ -597,3 +597,90 @@ test("the bar lends a fresh saying its slot, then returns it to the task", async
   await page.getByRole("button", { name: "show tasks" }).click();
   await expect(page.locator(".deer-bubble")).toContainText("sitting-around");
 });
+
+test("a theme choice still applies when persistence is unavailable", async ({ page, context }) => {
+  await mockWorkspace(context);
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === "chordial.theme") throw new DOMException("Quota exceeded", "QuotaExceededError");
+      original.call(this, key, value);
+    };
+  });
+  await page.getByRole("switch", { name: "theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("switch", { name: "theme" })).toHaveAttribute("aria-checked", "true");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+for (const dismissed of [false, true]) {
+test(`a delayed snapshot cannot ${dismissed ? "resurrect a dismissed" : "replace a newer"} saying`, async ({ page, context }) => {
+  const mock = await mockWorkspace(context);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let requested = 0;
+  let completed = 0;
+  await context.route("**/v1/state", async (route) => {
+    requested++;
+    await held;
+    await route.fulfill({ json: {
+      focus: { running: false, banked: {} }, linked: true,
+      line: "An older saying from the snapshot.", sync_error: null,
+    } });
+    completed++;
+  });
+  await page.setViewportSize({ width: 320, height: 560 });
+  await page.goto("/deer.html");
+  await expect(page.getByText("3 to go")).toBeVisible();
+  await expect.poll(() => requested).toBeGreaterThan(0);
+  mock.sayLine("The newest saying.");
+  await expect(page.locator(".deer-bubble")).toContainText("The newest saying.");
+  if (dismissed) await page.getByRole("button", { name: "dismiss" }).click();
+  release();
+  await expect.poll(() => completed).toBe(requested);
+  // Wait for the actual HTTP completion to be rendered before asserting absence.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  if (dismissed) await expect(page.locator(".deer-bubble")).toHaveCount(0);
+  else await expect(page.locator(".deer-bubble")).toContainText("The newest saying.");
+});
+}
+
+for (const entry of ["/", "/deer.html"]) {
+  test(`native theme is requested without a sidebar at ${entry}`, async ({ page, context }) => {
+    await mockWorkspace(context, false);
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.addInitScript(() => {
+      const label = location.pathname === "/deer.html" ? "deer" : "main";
+      // Record requests at the native boundary; capability validation is covered
+      // by compiling the Tauri app, and OS chrome still needs a native smoke test.
+      Object.assign(window, {
+        nativeTheme: null,
+        __TAURI_INTERNALS__: {
+          metadata: { currentWindow: { label }, currentWebview: { label } },
+          transformCallback: () => 1,
+          invoke: async (command: string, args: { value?: string; label?: string }) => {
+            if (command === "plugin:window|set_theme") {
+              Object.assign(window, { nativeTheme: args });
+            }
+            if (command === "plugin:window|outer_position") return { x: 0, y: 0 };
+            if (command === "plugin:window|scale_factor") return 1;
+            return null;
+          },
+        },
+      });
+    });
+    await page.goto(entry);
+    const expectedLabel = entry === "/" ? "main" : "deer";
+    const nativeTheme = () => page.evaluate(() => (window as unknown as { nativeTheme: unknown }).nativeTheme);
+    await expect.poll(nativeTheme).toEqual({ label: expectedLabel, value: "dark" });
+    const other = await context.newPage();
+    await other.goto("/");
+    await other.evaluate(() => localStorage.setItem("chordial.theme", "light"));
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect.poll(nativeTheme).toEqual({ label: expectedLabel, value: "light" });
+  });
+}

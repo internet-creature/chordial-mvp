@@ -68,11 +68,11 @@ the button opens/reuses a named companion popup.
   the main window's 760 × 520 minimum size.
 - The supplied artwork replaces the default Tauri icons. Its centered square
   source is retained at `app/src-tauri/icons/source.png`; the UI uses a small
-  256px copy. Native window chrome is set to dark to match the content.
+  256px copy. Native window chrome follows the selected theme.
 
 ## Validation and limits
 
-Passed: production frontend build, 93 frontend unit tests, 11 browser tests,
+Passed: production frontend build, 100 frontend unit tests, 19 browser tests,
 and 18 native Rust tests.
 
 `npm run build` checks TypeScript and builds both window entries. `npm test`
@@ -86,6 +86,10 @@ pages and completely intercepted server/sidecar traffic to exercise:
 - Focus refresh and 30-second recovery without a main window.
 - Opening and reopening the companion from the sidebar in browser preview.
 - Home, conversation, archive, link, task-detail, minimum-size, and timer layouts.
+- Shared theme selection, persistence failures, and native theme requests from
+  both entries, including the unlinked main window.
+- Persistent companion speech, dismissal, delayed snapshot races, and timer text.
+- Leaf animation completion, resizing, failure suppression, and reduced motion.
 
 The browser suite writes screenshots into `app/artifacts/` (ignored by Git).
 Run `npx playwright install chromium` once before running it on a new machine.
@@ -162,3 +166,17 @@ bubble.
 The bar has a single text slot. A notice takes it first; a saying borrows it
 for twelve seconds after it arrives; then the running task's title has it
 back. The bubble in the full form still holds the saying.
+
+## Branch review corrections
+
+Native theme changes now have the required Tauri window capability and run from
+both entry points, including the link screen and companion, instead of depending
+on the sidebar being mounted. A failed preferences write no longer immediately
+undoes the selected theme; it stays selected for that window's session.
+
+A slow sidecar snapshot could previously replace a newer spoken line or bring
+back speech after dismissal. Snapshot restoration now checks the speech revision
+captured when the request began, and responses from superseded effects are
+ignored. Speech persistence runs outside React state updaters. Regression tests
+reproduced the storage failure and stale-speech defects before the corrections
+and cover both visible and dismissed newer speech.

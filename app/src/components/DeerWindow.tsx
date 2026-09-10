@@ -136,6 +136,8 @@ export default function DeerWindow() {
   const [saying, setSaying] = useState<Saying | null>(() =>
     loadSaying(window.sessionStorage),
   );
+  const latestSaying = useRef(saying);
+  const sayingRevision = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -178,14 +180,15 @@ export default function DeerWindow() {
   /** the companion said something: it shows until replaced or dismissed */
   const say = useCallback((text: string | null | undefined) => {
     if (!text) return;
-    setSaying((previous) => {
-      const next = { seq: nextSeq(previous, Date.now()), text };
-      saveSaying(window.sessionStorage, next);
-      return next;
-    });
+    sayingRevision.current++;
+    const next = { seq: nextSeq(latestSaying.current, Date.now()), text };
+    latestSaying.current = next;
+    saveSaying(window.sessionStorage, next);
+    setSaying(next);
   }, []);
 
   const dismiss = useCallback(() => {
+    sayingRevision.current++;
     setSaying(null);
     dismissSaying(window.sessionStorage);
   }, []);
@@ -251,18 +254,29 @@ export default function DeerWindow() {
   }, [token, connected]);
 
   useEffect(() => {
+    let cancelled = false;
+    const revision = sayingRevision.current;
     fetchSidecarState()
       .then((state) => {
+        if (cancelled) return;
         setFocus(state.focus);
         if (state.activity) setActivity(state.activity);
         // the sidecar repeats its latest line on connect: a line already
-        // shown (or dismissed) is not said again
-        if (state.line && state.line !== lastSayingText(window.sessionStorage))
+        // shown (or dismissed) is not said again. A newer arrival or dismissal
+        // also wins over a snapshot that was already in flight.
+        if (
+          revision === sayingRevision.current &&
+          state.line &&
+          state.line !== lastSayingText(window.sessionStorage)
+        )
           say(state.line);
         setOffer(state.offer ?? null);
       })
       .catch(() => {});
-  }, [token, connected]);
+    return () => {
+      cancelled = true;
+    };
+  }, [token, connected, say]);
 
   useEffect(() => {
     const socket = new SidecarSocket({

@@ -207,6 +207,10 @@ async function mockWorkspace(context: BrowserContext, linked = true) {
           }),
         ),
       ),
+    sayLine: (text: string) =>
+      sidecars.forEach((socket) =>
+        socket.send(JSON.stringify({ type: "line", moment: "block_start", text })),
+      ),
     setFocus: (value: FocusState) => {
       focus = value;
       sidecars.forEach((socket) =>
@@ -239,7 +243,7 @@ test("chat changes refresh the companion without reopening it", async ({
   await expect(
     companion.getByText("Chordial Willowden:", { exact: false }),
   ).toBeVisible();
-  await expect(companion.getByText("tasks up to date")).toBeVisible();
+  await expect(companion.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
 });
 
 test("server deliveries and companion edits update an already-open home", async ({
@@ -278,7 +282,7 @@ test("failed task reads keep the last list, show a warning, and recover on retry
 }) => {
   const mock = await mockWorkspace(context);
   await page.goto("/deer.html");
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
   mock.setOffline(true);
   await page.getByRole("button", { name: "Refresh tasks" }).click();
   await expect(
@@ -290,7 +294,7 @@ test("failed task reads keep the last list, show a warning, and recover on retry
   mock.setOffline(false);
   mock.removeVideoTasks();
   await page.getByRole("button", { name: "Refresh tasks" }).click();
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
   await expect(
     page.getByText("Pomodoro 2: record", { exact: false }),
   ).toHaveCount(0);
@@ -303,7 +307,7 @@ test("companion refreshes on focus and after 30 seconds with no main window", as
   const mock = await mockWorkspace(context);
   await page.clock.install();
   await page.goto("/deer.html");
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
   mock.setOffline(true);
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(
@@ -315,7 +319,7 @@ test("companion refreshes on focus and after 30 seconds with no main window", as
   await expect(
     page.getByText("Pomodoro 2: record", { exact: false }),
   ).toHaveCount(0);
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText(/[0-9] to go/)).toBeVisible();
 });
 
 test("sidebar opens and reopens the companion in browser preview", async ({
@@ -327,11 +331,11 @@ test("sidebar opens and reopens the companion in browser preview", async ({
   const first = context.waitForEvent("page");
   await page.getByRole("button", { name: "open companion" }).click();
   const companion = await first;
-  await expect(companion.getByText("tasks up to date")).toBeVisible();
+  await expect(companion.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
   await companion.close();
   const second = context.waitForEvent("page");
   await page.getByRole("button", { name: "open companion" }).click();
-  await expect((await second).getByText("tasks up to date")).toBeVisible();
+  await expect((await second).getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
 });
 
 test("layouts: home, room, archive, companion and timer", async ({
@@ -364,7 +368,7 @@ test("layouts: home, room, archive, companion and timer", async ({
   await page.screenshot({ path: "artifacts/archive.png" });
   await page.setViewportSize({ width: 320, height: 560 });
   await page.goto("/deer.html");
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
   await page
     .getByRole("button", {
       name: "Chordial Willowden: sketch the first clearing",
@@ -405,13 +409,13 @@ test("an initial task outage is never presented as an empty day", async ({
   await expect(
     page.getByText("can’t reach your tasks — retrying"),
   ).toBeVisible();
-  await expect(page.getByText("tasks unavailable")).toBeVisible();
+  await expect(page.locator(".deer-bubble")).toHaveCount(0);
   await expect(
     page.getByText("nothing on the list yet", { exact: false }),
   ).toHaveCount(0);
   mock.setOffline(false);
   await page.getByRole("button", { name: "Refresh tasks" }).click();
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText("3 to go")).toBeVisible();
 });
 
 test("interface omits decorative labels", async ({ page, context }) => {
@@ -451,7 +455,7 @@ test("finishing a block draws leaves, survives resize and re-render, then clears
   await page.clock.install();
   await page.setViewportSize({ width: 320, height: 560 });
   await page.goto("/deer.html");
-  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(page.getByText(/3 to go|2 to go|1 to go|0 to go/)).toBeVisible();
   // the page's fake clock runs a few ms ahead of this process: pause just ahead
   await page.clock.pauseAt(Date.now() + 1_000);
   // quieter actions do not celebrate: adding a task draws nothing
@@ -535,4 +539,61 @@ test("the theme switch is shared by both windows and remembered", async ({
     "aria-checked",
     "true",
   );
+});
+
+test("the bubble is the companion's alone: it stays until dismissed and survives a reload", async ({
+  page,
+  context,
+}) => {
+  const mock = await mockWorkspace(context);
+  await page.setViewportSize({ width: 320, height: 560 });
+  await page.goto("/deer.html");
+  await expect(page.getByText("3 to go")).toBeVisible();
+  // nothing said yet: no bubble, the counts live in the status row
+  await expect(page.locator(".deer-bubble")).toHaveCount(0);
+  await expect(page.getByText("tasks up to date")).toHaveCount(0);
+  mock.sayLine("*folds neatly into deer shape* okay! clock's yours.");
+  const bubble = page.locator(".deer-bubble");
+  await expect(bubble).toContainText("clock's yours.");
+  await page.screenshot({ path: "artifacts/companion-saying.png" });
+  // a failed action is chrome: it lands in the status row, not the bubble
+  await context.route("**/api/v1/tasks", (route) =>
+    route.fulfill({ status: 503, json: { error: "could not add" } }),
+  );
+  await page.getByRole("textbox", { name: "New task title" }).fill("a task");
+  await page.getByRole("button", { name: "Add task" }).click();
+  await expect(page.locator(".task-sync.notice")).toContainText("could not add");
+  await expect(bubble).toContainText("clock's yours.");
+  await context.unroute("**/api/v1/tasks");
+  // a reload brings the last saying back
+  await page.reload();
+  await expect(page.locator(".deer-bubble")).toContainText("clock's yours.");
+  // a dismiss is remembered
+  await page.getByRole("button", { name: "dismiss" }).click();
+  await expect(page.locator(".deer-bubble")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("3 to go")).toBeVisible();
+  await expect(page.locator(".deer-bubble")).toHaveCount(0);
+});
+
+test("the bar lends a fresh saying its slot, then returns it to the task", async ({
+  page,
+  context,
+}) => {
+  const mock = await mockWorkspace(context);
+  await page.clock.install();
+  await page.setViewportSize({ width: 440, height: 56 });
+  await page.goto("/deer.html");
+  // the page's fake clock runs a few ms ahead of this process: pause just ahead
+  await page.clock.pauseAt(Date.now() + 1_000);
+  mock.setFocus(RUNNING);
+  await expect(page.getByRole("button", { name: "show tasks" })).toBeVisible();
+  await expect(page.locator(".deer-bar-title")).toContainText("Chordial Willowden");
+  mock.sayLine("timer started! i'll handle the sitting-around department.");
+  await expect(page.locator(".deer-bar-line")).toContainText("sitting-around");
+  await page.clock.runFor(13_000);
+  await expect(page.locator(".deer-bar-title")).toContainText("Chordial Willowden");
+  // the saying itself was not lost: opening the full form shows it
+  await page.getByRole("button", { name: "show tasks" }).click();
+  await expect(page.locator(".deer-bubble")).toContainText("sitting-around");
 });

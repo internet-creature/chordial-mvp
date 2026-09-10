@@ -55,7 +55,15 @@ import {
   quietLine,
   removeLabel,
 } from "../lib/rewind";
-import { bubbleFallback } from "../lib/bubble";
+import {
+  dayStatus,
+  dismissSaying,
+  lastSayingText,
+  loadSaying,
+  nextSeq,
+  saveSaying,
+  type Saying,
+} from "../lib/bubble";
 import {
   rememberScopeSkip,
   runLabel,
@@ -82,7 +90,12 @@ import {
 import { useLeafFlourish } from "./LeafFlourish";
 import InlineContent from "./InlineContent";
 
-const LINE_LINGER_MS = 12000;
+// the bar has one text slot: a fresh saying borrows it this long, then
+// the running task's title has it back. the saying itself stays in the
+// bubble until the next one or a dismiss - nothing times it out.
+const BAR_LINE_MS = 12000;
+// a chrome notice (an action that did not go through) is brief
+const NOTICE_MS = 8000;
 const TOKEN_POLL_MS = 2500;
 const PENDING_RETRY_MS = 10000;
 // the card collapses to the quiet chip after this - deferral, not expiry
@@ -118,7 +131,12 @@ export default function DeerWindow() {
   );
   const [activity, setActivity] = useState<ActivityFlags | null>(null);
   const { today, error: taskError, updatedAt, refreshToday } = useToday(token);
-  const [line, setLine] = useState<string | null>(null);
+  // what the companion last said, and a chrome notice: two different
+  // things, two different homes (the bubble, the status row)
+  const [saying, setSaying] = useState<Saying | null>(() =>
+    loadSaying(window.sessionStorage),
+  );
+  const [notice, setNotice] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [newTitle, setNewTitle] = useState("");
@@ -150,17 +168,33 @@ export default function DeerWindow() {
   );
   const [peeking, setPeeking] = useState(false);
   const [onTop, setOnTop] = useState<boolean | null>(null);
-  const lineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // the window geometry runner: one switch at a time, in order
   const geometry = useRef<Promise<void>>(Promise.resolve());
   const wornForm = useRef<Form | null>(null);
 
-  const showLine = useCallback((text: string) => {
-    setLine(text);
-    if (lineTimer.current !== null) clearTimeout(lineTimer.current);
-    lineTimer.current = setTimeout(() => setLine(null), LINE_LINGER_MS);
+  /** the companion said something: it shows until replaced or dismissed */
+  const say = useCallback((text: string | null | undefined) => {
+    if (!text) return;
+    setSaying((previous) => {
+      const next = { seq: nextSeq(previous, Date.now()), text };
+      saveSaying(window.sessionStorage, next);
+      return next;
+    });
+  }, []);
+
+  const dismiss = useCallback(() => {
+    setSaying(null);
+    dismissSaying(window.sessionStorage);
+  }, []);
+
+  /** chrome speaking, not the companion: a failed action, briefly */
+  const showNotice = useCallback((text: string) => {
+    setNotice(text);
+    if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), NOTICE_MS);
   }, []);
 
   /** open the card; after a while it settles into the chip - the person's
@@ -221,7 +255,10 @@ export default function DeerWindow() {
       .then((state) => {
         setFocus(state.focus);
         if (state.activity) setActivity(state.activity);
-        if (state.line) setLine(state.line);
+        // the sidecar repeats its latest line on connect: a line already
+        // shown (or dismissed) is not said again
+        if (state.line && state.line !== lastSayingText(window.sessionStorage))
+          say(state.line);
         setOffer(state.offer ?? null);
       })
       .catch(() => {});
@@ -235,7 +272,7 @@ export default function DeerWindow() {
           if (payload.activity) setActivity(payload.activity);
           if ("offer" in payload) setOffer(payload.offer ?? null);
         }
-        if (payload.type === "line") showLine(payload.text);
+        if (payload.type === "line") say(payload.text);
         if (payload.type === "rewind_offer") {
           // the return moment: the card IS the welcome
           setOffer(payload.offer);
@@ -246,7 +283,7 @@ export default function DeerWindow() {
     });
     socket.start();
     return () => socket.stop();
-  }, [showLine, expandCard]);
+  }, [say, expandCard]);
 
   // a question that resolved elsewhere takes its controls with it
   useEffect(() => {
@@ -257,6 +294,7 @@ export default function DeerWindow() {
     () => () => {
       if (cardTimer.current !== null) clearTimeout(cardTimer.current);
       if (appliedTimer.current !== null) clearTimeout(appliedTimer.current);
+      if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
     },
     [],
   );
@@ -465,13 +503,13 @@ export default function DeerWindow() {
         minutes,
       );
       setFocus(result.focus);
-      showLine(result.line);
+      say(result.line);
       rememberTarget(window.sessionStorage, task.id, minutes);
       setSelectedId(null);
       setEditingScope(false);
       setPeeking(false); // a fresh start goes to the bar
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "action failed — try again");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -522,7 +560,7 @@ export default function DeerWindow() {
       await patchTask(token, task.id, { next_action: scope });
       setEditingScope(false);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "couldn’t save that");
+      showNotice(err instanceof Error ? err.message : "couldn’t save that");
     } finally {
       setBusy(false);
     }
@@ -538,7 +576,7 @@ export default function DeerWindow() {
       if (!stopped) {
         // a sidecar outage or a refused transition: the clock may still
         // be counting, so the task stays where it is (sol, #87)
-        showLine("couldn’t pause the timer — task unchanged");
+        showNotice("couldn’t pause the timer — task unchanged");
         return;
       }
     }
@@ -547,7 +585,7 @@ export default function DeerWindow() {
       await patchTask(token, task.id, { set_aside: true });
       setSelectedId(null);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "couldn’t set that aside");
+      showNotice(err instanceof Error ? err.message : "couldn’t set that aside");
     } finally {
       setBusy(false);
     }
@@ -575,7 +613,7 @@ export default function DeerWindow() {
       await patchTask(token, task.id, patch);
       setAsideId(null);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "action failed — try again");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -605,10 +643,10 @@ export default function DeerWindow() {
       const result = await pauseFocus(resolution);
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
-      showLine(result.line);
+      say(result.line);
       return !result.focus.running;
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "action failed — try again");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
       return false;
     } finally {
       setBusy(false);
@@ -642,12 +680,12 @@ export default function DeerWindow() {
       const result = await finishFocus(resolution);
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
-      showLine(result.line);
+      say(result.line);
       if (result.held) return; // frozen: the answer will finish it
       flourish();
       await markTaskDone(taskId);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "action failed — try again");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -699,7 +737,7 @@ export default function DeerWindow() {
       // the next authoritative question, straight from the response -
       // another held block's card must not be lost to a broadcast race
       setOffer(result.offer ?? null);
-      if (result.line) showLine(result.line);
+      say(result.line);
       if (action === "remove" && !result.run) {
         // in-run apply: show the resting state with its undo
         const boundary = at ?? resolved.candidates[0]?.at;
@@ -720,7 +758,7 @@ export default function DeerWindow() {
         await markTaskDone(resolved.task_id);
       }
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "action failed — try again");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -735,7 +773,7 @@ export default function DeerWindow() {
       setOffer(result.offer ?? null);
       setApplied(null);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "action failed — try again");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -752,7 +790,7 @@ export default function DeerWindow() {
       await createTask(token, title);
       setNewTitle("");
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "couldn’t add that");
+      showNotice(err instanceof Error ? err.message : "couldn’t add that");
     } finally {
       setBusy(false);
     }
@@ -809,6 +847,11 @@ export default function DeerWindow() {
     </div>
   );
 
+  // the bar's one text slot: a notice first, then a saying while fresh
+  const barLine =
+    notice ??
+    (saying && now - saying.seq < BAR_LINE_MS ? saying.text : null);
+
   // --- the bar: the slim form while a clock runs (§11.1) ----------------
 
   if (form === "bar") {
@@ -827,9 +870,9 @@ export default function DeerWindow() {
           🦌
         </button>
         <div className="deer-bar-text" data-tauri-drag-region="true">
-          {line ? (
-            <span className="deer-bar-line">
-              <InlineContent content={line} />
+          {barLine ? (
+            <span className={`deer-bar-line${notice ? " notice" : ""}`}>
+              <InlineContent content={barLine} />
             </span>
           ) : (
             <span className="deer-bar-title" data-tauri-drag-region="true">
@@ -957,29 +1000,22 @@ export default function DeerWindow() {
         >
           🦌
         </div>
-        <div
-          className={`deer-bubble${line ? " speaking" : ""}`}
-          role="status"
-          aria-live="polite"
-        >
-          <span className="deer-bubble-text">
-            <InlineContent
-              content={
-                line ??
-                (!today
-                  ? (token ? (taskError ? "tasks unavailable" : "loading tasks…") : "link your device to see tasks")
-                  : bubbleFallback({
-                  blocked: !!activity?.blocked,
-                  drifting: !!activity?.drifting,
-                  running: focus.running,
-                  overtime,
-                  openCount: openTasks.length,
-                  doneCount: doneTasks.length,
-                  minutesToday,
-                }))
-              }
-            />
-          </span>
+        <div className="deer-bubble-slot" role="status" aria-live="polite">
+          {saying && (
+            <div className="deer-bubble">
+              <span className="deer-bubble-text">
+                <InlineContent content={saying.text} />
+              </span>
+              <button
+                className="deer-bubble-dismiss"
+                onClick={dismiss}
+                aria-label="dismiss"
+                title="dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1192,7 +1228,25 @@ export default function DeerWindow() {
 
       {token ? (
         <div className="deer-tasks">
-          <TaskSyncStatus error={taskError} updatedAt={updatedAt} onRefresh={refreshToday} />
+          <TaskSyncStatus
+            error={taskError}
+            notice={notice}
+            updatedAt={updatedAt}
+            onRefresh={refreshToday}
+            summary={
+              today
+                ? dayStatus({
+                    blocked: !!activity?.blocked,
+                    drifting: !!activity?.drifting,
+                    running: focus.running,
+                    overtime,
+                    openCount: openTasks.length,
+                    doneCount: doneTasks.length,
+                    minutesToday,
+                  })
+                : undefined
+            }
+          />
           <ul>
             {openTasks.map((task) => {
               const active = focus.running && focus.task_id === task.id;

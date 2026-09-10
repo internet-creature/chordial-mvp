@@ -43,17 +43,24 @@
   box-shadow: none;
 }
 
-/* the head (dogfood 2026-09-08): the companion's icon at the top-left
-   and a speech bubble that is always there - no pop-in. the bubble
-   carries the latest line, else a plain fact about the day. */
+/* the head: the companion's icon at the top-left, and beside it their
+   bubble when they have said something. the slot is a live region so a
+   line is also its own announcement; it is empty when there is no line. */
 .deer-head {
   width: 100%;
+  min-height: 36px;
   display: flex;
   align-items: flex-end;
   gap: 10px;
   padding-left: 2px;
   flex-shrink: 0;
   cursor: grab;
+}
+
+.deer-bubble-slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
 }
 
 .deer-bubble {
@@ -64,13 +71,14 @@
   min-height: 34px;
   display: flex;
   align-items: center;
+  gap: 6px;
   background: var(--bubble);
   border-radius: 16px;
   border-bottom-left-radius: 6px;
-  padding: 8px 12px;
+  padding: 8px 8px 8px 12px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--sage-ink);
+  color: var(--ink);
 }
 
 .deer-bubble::before {
@@ -86,15 +94,35 @@
 }
 
 .deer-bubble-text {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  user-select: text;
+  cursor: text;
 }
 
-.deer-bubble.speaking {
+/* the line leaves when the person says so, never by timer */
+.deer-bubble-dismiss {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.deer-bubble-dismiss:hover,
+.deer-bubble-dismiss:focus-visible {
   color: var(--ink);
+  background: var(--bg-hover);
+  border-color: var(--line);
 }
 
 .deer-self {
@@ -739,6 +767,12 @@
 .deer-bar-line {
   font-weight: 500;
   font-style: italic;
+}
+
+/* a chrome notice in the bar's one text slot: plain, and briefly */
+.deer-bar-line.notice {
+  font-style: normal;
+  color: var(--rose-alert);
 }
 
 .deer-bar-fill {

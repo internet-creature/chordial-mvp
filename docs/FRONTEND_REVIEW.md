@@ -141,3 +141,24 @@ legible on both grounds.
 
 Chrome copy no longer uses woodland framing: the waiting phrases in the room
 are plain, and the stylesheet comments name surfaces by what they are.
+
+## The bubble is the companion's
+
+The companion's speech bubble now carries only what the companion said: an
+authored line from the sidecar, on a transition or pushed over its socket.
+When there is no line there is no bubble; the icon sits alone in the header.
+A line never times out. It leaves when the next line arrives or when the
+person dismisses it with the bubble's ×. The last saying is kept in session
+storage with a sequence number, so a form switch, a reload, or a reopened
+window shows it again, and a dismissed saying stays dismissed.
+
+The day's counts and states are chrome and moved to the status row under the
+header: "3 to go · 1 done · 42 min today", qualified by "notifications
+paused", "away from desk", or "past target" when one applies. Loading and
+outage states already lived there. A failed action is also chrome: it shows
+in the status row in the alert colour for eight seconds and never in the
+bubble.
+
+The bar has a single text slot. A notice takes it first; a saying borrows it
+for twelve seconds after it arrives; then the running task's title has it
+back. The bubble in the full form still holds the saying.

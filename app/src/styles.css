@@ -1216,10 +1216,12 @@ textarea::placeholder {
   border-radius: 50%;
   background: var(--sage);
 }
-.task-sync.stale {
+.task-sync.stale,
+.task-sync.notice {
   color: var(--rose-alert);
 }
-.task-sync.stale .status-light {
+.task-sync.stale .status-light,
+.task-sync.notice .status-light {
   background: var(--rose-alert);
 }
 .task-sync button {

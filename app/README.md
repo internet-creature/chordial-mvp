@@ -131,3 +131,24 @@ promptly.
 - The template's opener plugin was removed (nothing opens external URLs yet).
   If/when the app needs to open links, re-add it with a scoped URL allowlist,
   not `opener:default`.
+
+## forest frontend review
+
+The forest theme and companion synchronization/recovery work are documented in
+[`docs/FRONTEND_REVIEW.md`](../docs/FRONTEND_REVIEW.md). The main sidebar's
+**open companion** button and the tray's **Show companion** action restore a
+hidden companion without restarting its clock.
+
+Browser regression tests use mocked server and sidecar responses, so they do not
+need the VPS or a local database:
+
+```bash
+npm ci
+npx playwright install chromium
+npm test
+npm run test:browser
+```
+
+The source artwork for desktop icons is `src-tauri/icons/source.png`. To
+regenerate Tauri icons, run `npm run tauri -- icon src-tauri/icons/source.png`.
+The frontend uses `public/chordial-icon.png`, a smaller copy of that artwork.

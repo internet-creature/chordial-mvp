@@ -7,9 +7,9 @@
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 0 16px 16px;
-  background: linear-gradient(165deg, #f4ecfa 0%, #fdf6fb 55%, #fbeaf3 100%);
-  border: 1px solid #c9b3ec;
+  padding: 0 16px 14px;
+  background: var(--bg-room);
+  border: 1px solid var(--line);
   border-radius: 16px;
   overflow: hidden;
   position: relative;
@@ -17,7 +17,7 @@
 
 .deer-drag {
   width: 100%;
-  height: 26px;
+  height: 32px;
   flex-shrink: 0;
   cursor: grab;
   display: flex;
@@ -39,8 +39,8 @@
 }
 
 .deer-link-dot.on {
-  background: #4cd964;
-  box-shadow: 0 0 5px rgba(76, 217, 100, 0.8);
+  background: var(--sage);
+  box-shadow: none;
 }
 
 /* the head (dogfood 2026-09-08): a small deer at the top-left and a
@@ -58,34 +58,32 @@
 }
 
 .deer-bubble {
-  /* an sms bubble: its own pastel (sea glass - nothing else in the room
-     wears it), no hairline, a tail toward the deer */
+  /* Sage speech, with a small tail toward the deer. */
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 34px;
   display: flex;
   align-items: center;
-  background: linear-gradient(180deg, #e6f8f1, #d2efe6);
+  background: var(--sage-soft);
   border-radius: 16px;
   border-bottom-left-radius: 6px;
   padding: 8px 12px;
   font-size: 12px;
   line-height: 1.4;
-  color: #3b5a52;
-  box-shadow: 0 6px 16px -9px rgba(60, 110, 95, 0.45);
+  color: var(--sage);
+  box-shadow: none;
 }
 
 .deer-bubble::before {
-  /* the tail: a rotated square in the bubble's colour, sitting over the
-     room's gradient (the two-pseudo-element trick needs a flat page) */
+  /* The tail meets the flat pine surface. */
   content: "";
   position: absolute;
   left: -5px;
   bottom: 7px;
   width: 12px;
   height: 12px;
-  background: #d2efe6;
+  background: var(--bg-raised);
   border-radius: 2px;
   transform: rotate(45deg) skew(8deg, 8deg);
 }
@@ -99,7 +97,7 @@
 }
 
 .deer-bubble.speaking {
-  color: #2d4a42;
+  color: var(--ink);
 }
 
 .deer-self {
@@ -137,7 +135,6 @@
   .deer-self {
     transition: none;
   }
-
 }
 
 .deer-session {
@@ -162,8 +159,9 @@
 
 .deer-clock {
   margin: 0;
-  font-size: 30px;
-  font-weight: 800;
+  font-size: 34px;
+  font-weight: 500;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
@@ -172,14 +170,14 @@
   width: 100%;
   height: 8px;
   border-radius: 999px;
-  background: rgba(201, 179, 236, 0.3);
+  background: var(--line);
   overflow: hidden;
 }
 
 .deer-fill-bar {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  background: var(--sage);
   transition: width 1s linear;
 }
 
@@ -191,7 +189,7 @@
 }
 
 .deer-clock.over {
-  color: #57975f;
+  color: var(--sage);
 }
 
 .deer-controls {
@@ -221,17 +219,17 @@
   font-weight: 700;
   padding: 6px 14px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #b6ecc0, #97dca6 55%, #7fce90);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  box-shadow: 0 4px 10px -4px rgba(127, 206, 144, 0.8);
-  color: #fff;
-  text-shadow: 0 1px 1px rgba(40, 80, 50, 0.5);
+  background: var(--sage);
+  border: 1px solid transparent;
+  box-shadow: none;
+  color: var(--on-accent);
+  text-shadow: none;
 }
 
 .deer-finish.confirm {
-  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
-  box-shadow: 0 4px 10px -4px rgba(233, 143, 187, 0.8);
-  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+  background: var(--sage);
+  box-shadow: none;
+  text-shadow: none;
 }
 
 .deer-pause:disabled,
@@ -272,28 +270,31 @@
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 7px 10px;
-  box-shadow: 0 2px 8px -5px var(--shadow);
+  padding: 11px 12px;
+  box-shadow: none;
 }
 
 .deer-task.active {
-  border-color: #e98fbb;
+  border-color: var(--sage);
   background: var(--blush-soft);
 }
 
 .deer-task-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   font-size: 12.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .deer-task-bar {
   display: block;
   height: 5px;
   border-radius: 999px;
-  background: rgba(201, 179, 236, 0.28);
+  background: var(--line);
   overflow: hidden;
 }
 
@@ -301,12 +302,12 @@
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  background: var(--sage);
   transition: width 1s linear;
 }
 
 .deer-task-fill.done {
-  background: linear-gradient(90deg, #b6ecc0, #7fce90);
+  background: var(--sage);
 }
 
 .deer-task.done {
@@ -317,7 +318,7 @@
 
 .deer-task.done .deer-task-title {
   text-decoration: line-through;
-  text-decoration-color: rgba(58, 42, 64, 0.4);
+  text-decoration-color: var(--ink-faint);
 }
 
 .deer-task-check {
@@ -326,7 +327,7 @@
   top: 8px;
   font-size: 12px;
   font-weight: 800;
-  color: #57975f;
+  color: var(--sage);
 }
 
 .deer-task-note {
@@ -360,12 +361,12 @@
   width: 34px;
   flex-shrink: 0;
   border-radius: 999px;
-  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  color: #fff;
+  background: var(--sage);
+  border: 1px solid transparent;
+  color: var(--on-accent);
   font-weight: 800;
   font-size: 16px;
-  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+  text-shadow: none;
 }
 
 .deer-add button:disabled {
@@ -401,7 +402,7 @@
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 12px;
-  box-shadow: 0 6px 18px -10px var(--shadow);
+  box-shadow: none;
 }
 
 .deer-offer-line {
@@ -514,8 +515,8 @@
 }
 
 .deer-win-btn {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border-radius: 999px;
   border: 1px solid transparent;
@@ -551,18 +552,19 @@
 
 .deer-task:hover,
 .deer-task:focus-visible {
-  border-color: rgba(233, 143, 187, 0.5);
+  border-color: var(--sage);
   outline: none;
 }
 
 .deer-task.selected {
-  border-color: #c9b3ec;
-  box-shadow: 0 4px 12px -6px var(--shadow);
+  border-color: var(--sage);
+  box-shadow: none;
 }
 
 /* an open row shows the whole name, however long (dogfood 2026-09-08) */
 .deer-task.selected .deer-task-title,
 .deer-task.selected .deer-task-scope {
+  -webkit-line-clamp: unset;
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
@@ -595,9 +597,9 @@
 }
 
 .deer-task-play:hover:not(:disabled) {
-  color: #fff;
-  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
-  border-color: rgba(255, 255, 255, 0.6);
+  color: var(--on-accent);
+  background: var(--sage);
+  border-color: transparent;
 }
 
 .deer-task-play:disabled {
@@ -610,7 +612,7 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: #c86a9a;
+  color: var(--sage);
 }
 
 .deer-task-detail {
@@ -639,10 +641,10 @@
 }
 
 .deer-chip.on {
-  color: #fff;
-  background: linear-gradient(180deg, #d9c6f5, #c9b3ec);
-  border-color: rgba(255, 255, 255, 0.6);
-  text-shadow: 0 1px 1px rgba(80, 50, 120, 0.4);
+  color: var(--on-accent);
+  background: var(--sage);
+  border-color: transparent;
+  text-shadow: none;
 }
 
 .deer-start {
@@ -651,10 +653,10 @@
   font-weight: 700;
   padding: 4px 12px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  color: #fff;
-  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+  background: var(--sage);
+  border: 1px solid transparent;
+  color: var(--on-accent);
+  text-shadow: none;
   cursor: pointer;
 }
 
@@ -703,8 +705,8 @@
   align-items: center;
   gap: 8px;
   padding: 0 8px 0 6px;
-  background: linear-gradient(165deg, #f4ecfa 0%, #fdf6fb 55%, #fbeaf3 100%);
-  border: 1px solid #c9b3ec;
+  background: var(--bg-room);
+  border: 1px solid var(--line);
   border-radius: 28px;
   overflow: hidden;
   cursor: grab;
@@ -762,7 +764,7 @@
   display: block;
   height: 4px;
   border-radius: 999px;
-  background: rgba(201, 179, 236, 0.3);
+  background: var(--line);
   overflow: hidden;
 }
 
@@ -770,7 +772,7 @@
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #f4a6cb, #e98fbb);
+  background: var(--sage);
   transition: width 1s linear;
 }
 
@@ -783,7 +785,7 @@
 }
 
 .deer-bar-clock.over {
-  color: #57975f;
+  color: var(--sage);
 }
 
 .deer-bar-controls {
@@ -814,15 +816,15 @@
 }
 
 .deer-bar-btn.finish {
-  color: #fff;
-  background: linear-gradient(180deg, #b6ecc0, #97dca6 55%, #7fce90);
-  border-color: rgba(255, 255, 255, 0.6);
-  text-shadow: 0 1px 1px rgba(40, 80, 50, 0.5);
+  color: var(--on-accent);
+  background: var(--sage);
+  border-color: transparent;
+  text-shadow: none;
 }
 
 .deer-bar-btn.finish.confirm {
-  background: linear-gradient(180deg, #f9c8e0, #f4a6cb 55%, #e98fbb);
-  text-shadow: 0 1px 1px rgba(120, 50, 90, 0.5);
+  background: var(--sage);
+  text-shadow: none;
 }
 
 .deer-bar-btn:disabled {
@@ -831,7 +833,7 @@
 }
 
 .deer-bar-chip {
-  color: #a5527d;
+  color: var(--blush);
   background: var(--blush-soft);
 }
 
@@ -982,7 +984,7 @@
 }
 
 .deer-aside-door.letgo:hover:not(:disabled) {
-  color: #a3506f;
+  color: var(--blush);
 }
 
 .deer-aside-door:disabled {
@@ -1012,4 +1014,20 @@
 .deer-bar-scope {
   font-weight: 500;
   color: var(--ink-faint);
+}
+
+.deer-caption {
+  margin-right: auto;
+  color: var(--ink-faint);
+  font: 9px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.deer-task:focus-visible {
+  outline: 2px solid var(--sage);
+  outline-offset: 2px;
+}
+.deer-bar-clock {
+  font-family: var(--mono);
+  font-weight: 500;
 }

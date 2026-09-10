@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   createTask,
-  fetchToday,
   patchTask,
   SERVER_URL,
   setTaskStatus,
@@ -21,7 +20,9 @@ import {
   type Resolution,
   type RewindOffer,
 } from "../api/sidecar";
-import type { DoneTaskRow, TaskRow, TodayPayload } from "../api/types";
+import type { DoneTaskRow, TaskRow } from "../api/types";
+import { useToday } from "../lib/useToday";
+import TaskSyncStatus from "./TaskSyncStatus";
 import {
   autoBarEnabled,
   barPositionFrom,
@@ -116,7 +117,7 @@ export default function DeerWindow() {
     listPendingDone(window.localStorage),
   );
   const [activity, setActivity] = useState<ActivityFlags | null>(null);
-  const [today, setToday] = useState<TodayPayload | null>(null);
+  const { today, error: taskError, updatedAt, refreshToday } = useToday(token);
   const [line, setLine] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -180,13 +181,6 @@ export default function DeerWindow() {
     setConfirmingPause(false);
   }, []);
 
-  const refreshToday = useCallback(() => {
-    if (!token) return;
-    fetchToday(token)
-      .then(setToday)
-      .catch(() => {});
-  }, [token]);
-
   // notice link/relink/revoke from the main window: storage event + poll.
   // the async load keeps arrivals in order by only applying a changed value
   const refreshToken = useCallback(() => {
@@ -231,8 +225,7 @@ export default function DeerWindow() {
         setOffer(state.offer ?? null);
       })
       .catch(() => {});
-    refreshToday();
-  }, [token, connected, refreshToday]);
+  }, [token, connected]);
 
   useEffect(() => {
     const socket = new SidecarSocket({
@@ -507,7 +500,6 @@ export default function DeerWindow() {
     if (token) {
       try {
         await patchTask(token, task.id, { next_action: scope });
-        refreshToday();
       } catch {
         // the clock still starts; the line lives in the run label
       }
@@ -529,7 +521,6 @@ export default function DeerWindow() {
     try {
       await patchTask(token, task.id, { next_action: scope });
       setEditingScope(false);
-      refreshToday();
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t save that");
     } finally {
@@ -555,7 +546,6 @@ export default function DeerWindow() {
     try {
       await patchTask(token, task.id, { set_aside: true });
       setSelectedId(null);
-      refreshToday();
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t set that aside");
     } finally {
@@ -584,7 +574,6 @@ export default function DeerWindow() {
     try {
       await patchTask(token, task.id, patch);
       setAsideId(null);
-      refreshToday();
     } catch (err) {
       showLine(err instanceof Error ? err.message : "hm, that didn’t work");
     } finally {
@@ -762,7 +751,6 @@ export default function DeerWindow() {
     try {
       await createTask(token, title);
       setNewTitle("");
-      refreshToday();
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t add that");
     } finally {
@@ -806,7 +794,7 @@ export default function DeerWindow() {
         className="deer-win-btn"
         onClick={onHide}
         aria-label="minimize"
-        title="tuck her away — the tray brings her back"
+        title="hide — reopen from chordial’s sidebar or the tray"
       >
         –
       </button>
@@ -814,7 +802,7 @@ export default function DeerWindow() {
         className="deer-win-btn"
         onClick={onHide}
         aria-label="close"
-        title="close the window — the clock keeps counting"
+        title="hide companion — reopen from chordial’s sidebar; the clock keeps counting"
       >
         ×
       </button>
@@ -958,6 +946,7 @@ export default function DeerWindow() {
     {confetti}
     <div className="deer-window" data-tauri-drag-region="true">
       <div className="deer-drag" data-tauri-drag-region="true">
+        <span className="deer-caption" data-tauri-drag-region="true">companion</span>
         <span
           className={`deer-link-dot${connected ? " on" : ""}`}
           title={connected ? "the deer is home" : "looking for the sidecar…"}
@@ -984,7 +973,9 @@ export default function DeerWindow() {
             <InlineContent
               content={
                 line ??
-                bubbleFallback({
+                (!today
+                  ? (token ? (taskError ? "your tasks are out of reach for now" : "finding your day…") : "a little company, whenever you need")
+                  : bubbleFallback({
                   blocked: !!activity?.blocked,
                   drifting: !!activity?.drifting,
                   running: focus.running,
@@ -992,7 +983,7 @@ export default function DeerWindow() {
                   openCount: openTasks.length,
                   doneCount: doneTasks.length,
                   minutesToday,
-                })
+                }))
               }
             />
           </span>
@@ -1208,6 +1199,7 @@ export default function DeerWindow() {
 
       {token ? (
         <div className="deer-tasks">
+          <TaskSyncStatus error={taskError} updatedAt={updatedAt} onRefresh={refreshToday} />
           <ul>
             {openTasks.map((task) => {
               const active = focus.running && focus.task_id === task.id;
@@ -1551,7 +1543,7 @@ export default function DeerWindow() {
                 </li>
               );
             })}
-            {openTasks.length === 0 &&
+            {today && openTasks.length === 0 &&
               doneTasks.length === 0 &&
               asideTasks.length === 0 && (
                 <li className="deer-empty">
@@ -1564,9 +1556,10 @@ export default function DeerWindow() {
               value={newTitle}
               onChange={(e) => setNewTitle(e.currentTarget.value)}
               placeholder="add a task…"
+              aria-label="New task title"
               maxLength={300}
             />
-            <button type="submit" disabled={busy || !newTitle.trim()}>
+            <button type="submit" aria-label="Add task" disabled={busy || !newTitle.trim()}>
               +
             </button>
           </form>

@@ -31,11 +31,11 @@ export default function LinkScreen({ onLinked }: Props) {
     <div className="link-screen">
       <form className="link-card" onSubmit={submit}>
         <div className="link-mark" aria-hidden="true">
-          🦌
+          <img src="/chordial-icon.png" alt="" />
         </div>
         <h1>chordial</h1>
         <p className="link-lede">
-          a little house of companions. paste your link code and come in.
+          a little space to find your focus.<br />your companions are right here.
         </p>
         <label className="field">
           <span>link code</span>
@@ -48,6 +48,7 @@ export default function LinkScreen({ onLinked }: Props) {
             autoComplete="off"
           />
         </label>
+        <p className="link-help">Ask vel to “link my computer”, then paste the code here.</p>
         <label className="field">
           <span>call this device</span>
           <input

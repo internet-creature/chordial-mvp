@@ -1,5 +1,7 @@
 import type { CouncilMember } from "../api/types";
 import { memberHue } from "../lib/council";
+import { useState } from "react";
+import { showCompanion } from "../lib/tauriWindow";
 
 interface Props {
   council: CouncilMember[];
@@ -11,28 +13,40 @@ interface Props {
  * dimmed - residents you haven't been introduced to yet, not absences. */
 export default function PresenceRail({ council, view, onNavigate }: Props) {
   const visible = council.filter((m) => m.status !== "declined");
+  const [error, setError] = useState<string | null>(null);
 
   return (
-    <nav className="rail">
+    <nav className="rail" aria-label="Main navigation">
       <button
         className="rail-mark"
         onClick={() => onNavigate("home")}
         title="home"
       >
-        <span aria-hidden="true">🦌</span> chordial
+        <img src="/chordial-icon.png" alt="" />{" "}
+        <span>
+          chordial<span className="brand-caption">a little room to grow</span>
+        </span>
       </button>
 
       <div className="rail-nav">
         <button
           className={view === "home" ? "rail-link active" : "rail-link"}
           onClick={() => onNavigate("home")}
+          aria-current={view === "home" ? "page" : undefined}
         >
+          <span className="nav-glyph" aria-hidden="true">
+            ⌂
+          </span>{" "}
           home
         </button>
         <button
           className={view === "room" ? "rail-link active" : "rail-link"}
           onClick={() => onNavigate("room")}
+          aria-current={view === "room" ? "page" : undefined}
         >
+          <span className="nav-glyph" aria-hidden="true">
+            ›_
+          </span>{" "}
           today’s room
         </button>
       </div>
@@ -65,6 +79,28 @@ export default function PresenceRail({ council, view, onNavigate }: Props) {
             );
           })}
         </ul>
+      </div>
+      <div className="rail-footer">
+        <span className="rail-label">beside you</span>
+        <button
+          className="companion-launch"
+          onClick={() => {
+            setError(null);
+            void showCompanion().catch((err) =>
+              setError(
+                err instanceof Error ? err.message : "Couldn’t open the companion. Try Show companion in the tray menu.",
+              ),
+            );
+          }}
+        >
+          <span aria-hidden="true">↗</span> open companion
+        </button>
+        <p className="rail-hint">your tasks & a little company</p>
+        {error && (
+          <p className="link-error" role="alert">
+            {error}
+          </p>
+        )}
       </div>
     </nav>
   );

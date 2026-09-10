@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Browser validation artifacts
+/test-results/
+/playwright-report/
+/artifacts/

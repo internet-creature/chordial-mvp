@@ -288,10 +288,10 @@ export default function Room({
           <h2>{title}</h2>
           <p className="room-date">{subtitle}</p>
         </div>
-        <span
-          className={`ws-dot ${STATUS_DOT[socketStatus]}`}
-          title={`connection: ${socketStatus}`}
-        />
+        <span className="room-connection" role="status">
+          <span className={`ws-dot ${STATUS_DOT[socketStatus]}`} aria-hidden="true" />
+          {socketStatus === "open" ? "connected" : socketStatus === "connecting" ? "connecting…" : "offline"}
+        </span>
       </header>
 
       <div className="room-log" ref={logRef} onScroll={onLogScroll}>

@@ -16,6 +16,7 @@ import type {
   TaskRow,
   TodayPayload,
 } from "./types";
+import { announceTasksChanged } from "../lib/taskSync";
 
 // dev-mode: the python server runs beside `tauri dev` on its usual port.
 // override with VITE_CHORDIAL_SERVER when the server lives elsewhere.
@@ -66,7 +67,9 @@ export function linkDevice(
   });
 }
 
-export function fetchCouncil(token: string): Promise<{ council: CouncilMember[] }> {
+export function fetchCouncil(
+  token: string,
+): Promise<{ council: CouncilMember[] }> {
   return request("/api/v1/council", { token });
 }
 
@@ -81,8 +84,27 @@ export function fetchRoomMessages(
   return request(`/api/v1/rooms/current/messages?limit=${limit}`, { token });
 }
 
-export function fetchToday(token: string): Promise<TodayPayload> {
-  return request("/api/v1/today", { token });
+export async function fetchToday(
+  token: string,
+  signal?: AbortSignal,
+): Promise<TodayPayload> {
+  // A stalled connection must not hold the refresh queue forever. Use a
+  // separate controller for each read, also cancelled when its view/session ends.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timeout = setTimeout(abort, 15_000);
+  signal?.addEventListener("abort", abort);
+  if (signal?.aborted) abort();
+  try {
+    return await request("/api/v1/today", {
+      token,
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 /** the shared cycle state: projection of baseline + scope changes + progress */
@@ -91,7 +113,9 @@ export function fetchCycle(token: string): Promise<CyclePayload> {
 }
 
 /** the journal: recent daily rooms, newest first, summaries where committed */
-export function fetchArchive(token: string): Promise<{ rooms: ArchivedRoom[] }> {
+export function fetchArchive(
+  token: string,
+): Promise<{ rooms: ArchivedRoom[] }> {
   return request("/api/v1/rooms", { token });
 }
 
@@ -114,9 +138,7 @@ export function openCycleRetro(token: string): Promise<OpenCycleRoomResult> {
 }
 
 /** open (get-or-create) the planning room following the sealed cycle */
-export function openCyclePlanning(
-  token: string,
-): Promise<OpenCycleRoomResult> {
+export function openCyclePlanning(token: string): Promise<OpenCycleRoomResult> {
   return request("/api/v1/rooms/cycle/planning", { method: "POST", token });
 }
 
@@ -130,11 +152,11 @@ export function createTask(
   token: string,
   title: string,
 ): Promise<{ ok: boolean; task: TaskRow }> {
-  return request("/api/v1/tasks", {
+  return request<{ ok: boolean; task: TaskRow }>("/api/v1/tasks", {
     method: "POST",
     token,
     body: JSON.stringify({ title }),
-  });
+  }).then(taskChanged);
 }
 
 export function setTaskStatus(
@@ -142,11 +164,14 @@ export function setTaskStatus(
   taskId: number,
   status: string,
 ): Promise<{ ok: boolean; task: TaskRow }> {
-  return request(`/api/v1/tasks/${taskId}/status`, {
-    method: "POST",
-    token,
-    body: JSON.stringify({ status }),
-  });
+  return request<{ ok: boolean; task: TaskRow }>(
+    `/api/v1/tasks/${taskId}/status`,
+    {
+      method: "POST",
+      token,
+      body: JSON.stringify({ status }),
+    },
+  ).then(taskChanged);
 }
 
 /** the shaping seam (docs/FOCUS_DOGFOOD_DESIGN.md §4): scope, reschedule,
@@ -157,11 +182,16 @@ export function patchTask(
   taskId: number,
   patch: TaskPatch,
 ): Promise<{ ok: boolean; task: TaskRow }> {
-  return request(`/api/v1/tasks/${taskId}`, {
+  return request<{ ok: boolean; task: TaskRow }>(`/api/v1/tasks/${taskId}`, {
     method: "PATCH",
     token,
     body: JSON.stringify(patch),
-  });
+  }).then(taskChanged);
+}
+
+function taskChanged<T>(result: T): T {
+  announceTasksChanged();
+  return result;
 }
 
 // a turn can be slow (the model is thinking) and a duplicate POST for the
@@ -181,7 +211,7 @@ export async function sendRoomMessage(
     : "/api/v1/rooms/current/messages";
   for (let attempt = 0; ; attempt++) {
     try {
-      return await request<SendResult>(path, {
+      const result = await request<SendResult>(path, {
         method: "POST",
         token,
         body: JSON.stringify({
@@ -189,6 +219,8 @@ export async function sendRoomMessage(
           client_message_id: clientMessageId,
         }),
       });
+      announceTasksChanged();
+      return result;
     } catch (e) {
       if (
         e instanceof ApiError &&

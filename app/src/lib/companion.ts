@@ -19,7 +19,7 @@ export interface Point {
 
 /** logical (css) pixel sizes; the den matches tauri.conf's deer window */
 export const FORM_SIZES: Record<Form, Size> = {
-  den: { width: 270, height: 500 },
+  den: { width: 320, height: 560 },
   bar: { width: 440, height: 56 },
 };
 

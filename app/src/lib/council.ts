@@ -1,17 +1,11 @@
-// each council member gets a hue the ui leans on for avatar rings and name
-// chips - authored here (they're part of the visual identity, not server
-// data). tuned to read on the clearing's light pink-lavender ground; the
-// fallback is the site's deep blush so nothing ever renders unstyled.
-
+// Muted botanical hues with readable contrast on the forest surfaces.
 export const COUNCIL_HUES: Record<string, string> = {
-  vel: "#e98fbb", // the site's own deep blush - the deer IS the brand
-  pip: "#d97a4a", // acorn-cheeked terracotta
-  skip: "#5cb374", // trailside sage, deepened for daylight
-  remy: "#a081d8", // twilight lavender for a refined raccoon
-  mabel: "#c9628f", // warm rose, den-shaped
-  juniper: "#3fa89b", // juniper teal
-  edwin: "#6a87ad", // ledger-ink slate
+  vel: "#e8b3c3",
+  pip: "#dab58c",
+  skip: "#accfa4",
+  remy: "#bcb2d9",
+  mabel: "#dca8b7",
+  juniper: "#97c9bd",
+  edwin: "#a1bbd0",
 };
-
-export const memberHue = (id: string): string =>
-  COUNCIL_HUES[id] ?? "#e98fbb";
+export const memberHue = (id: string): string => COUNCIL_HUES[id] ?? "#accfa4";

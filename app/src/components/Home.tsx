@@ -3,7 +3,6 @@ import {
   fetchArc,
   fetchArchive,
   fetchCycleDoors,
-  fetchToday,
   isAuthError,
   openCyclePlanning,
   openCycleRetro,
@@ -13,10 +12,11 @@ import type {
   ArcState,
   CycleDoorsPayload,
   TaskRow,
-  TodayPayload,
 } from "../api/types";
 import type { CycleRoomHandle } from "./Room";
 import CyclePanel from "./CyclePanel";
+import { useToday } from "../lib/useToday";
+import TaskSyncStatus from "./TaskSyncStatus";
 
 interface Props {
   token: string;
@@ -89,7 +89,12 @@ export default function Home({
   onOpenArchive,
   onAuthLost,
 }: Props) {
-  const [today, setToday] = useState<TodayPayload | null>(null);
+  const {
+    today,
+    error: taskError,
+    updatedAt,
+    refreshToday,
+  } = useToday(token, onAuthLost);
   const [pastDays, setPastDays] = useState<ArchivedRoom[]>([]);
   const [doors, setDoors] = useState<CycleDoorsPayload | null>(null);
   const [arc, setArc] = useState<ArcState | null>(null);
@@ -98,15 +103,6 @@ export default function Home({
 
   useEffect(() => {
     let cancelled = false;
-    fetchToday(token)
-      .then((payload) => {
-        if (!cancelled) setToday(payload);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        if (isAuthError(e)) onAuthLost();
-        else setError(e instanceof Error ? e.message : "couldn’t load today");
-      });
     fetchArchive(token)
       .then((body) => {
         if (cancelled) return;
@@ -186,12 +182,36 @@ export default function Home({
   return (
     <div className="home">
       <header className="home-head">
+        <span className="eyebrow">your daily clearing</span>
         <h1>
           {greeting(new Date())}
           {name ? `, ${name}` : ""}
         </h1>
         <p className="home-date">{dateLine}</p>
       </header>
+
+      <button
+        className="room-invitation"
+        onClick={onEnterRoom}
+        aria-label={`Enter today’s room${unread ? `, ${unread} unread messages` : ""}`}
+      >
+        <span className="room-invitation-icon" aria-hidden="true">
+          ↗
+        </span>
+        <span>
+          <strong>today’s room</strong>
+          <small>a place to untangle the day, together.</small>
+        </span>
+        <span className="invitation-arrow" aria-hidden="true">
+          {unread > 0 ? unread : "→"}
+        </span>
+      </button>
+
+      <TaskSyncStatus
+        error={taskError}
+        updatedAt={updatedAt}
+        onRefresh={refreshToday}
+      />
 
       {error && <p className="soft-error">{error}</p>}
 
@@ -219,8 +239,8 @@ export default function Home({
         <p className="arc-line">
           the house is {arc.posture === "keeping watch" ? "" : "in "}
           {arc.posture} — {arc.streak} steady{" "}
-          {arc.streak === 1 ? "cycle has" : "cycles have"} stretched
-          check-ins to about every {formatBeat(arc.checkin_minutes)} 🌿
+          {arc.streak === 1 ? "cycle has" : "cycles have"} stretched check-ins
+          to about every {formatBeat(arc.checkin_minutes)} 🌿
         </p>
       )}
 
@@ -253,28 +273,13 @@ export default function Home({
         </section>
       )}
 
-      <button className="enter-room" onClick={onEnterRoom}>
-        step into today’s room →
-        {unread > 0 && (
-          <span
-            className="room-nudge"
-            title={`${unread} new ${unread === 1 ? "line" : "lines"} waiting`}
-          >
-            {unread}
-          </span>
-        )}
-      </button>
-
       {pastDays.length > 0 && (
         <section className="past-days">
           <h3>remembered days</h3>
           <ul>
             {pastDays.map((r) => (
               <li key={r.room_uuid}>
-                <button
-                  className="past-day"
-                  onClick={() => onOpenArchive(r)}
-                >
+                <button className="past-day" onClick={() => onOpenArchive(r)}>
                   <span className="past-day-date">
                     {r.date
                       ? new Date(`${r.date}T12:00:00`).toLocaleDateString(

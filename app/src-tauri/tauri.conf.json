@@ -17,17 +17,21 @@
         "width": 1100,
         "height": 720,
         "minWidth": 760,
-        "minHeight": 520
+        "minHeight": 520,
+        "theme": "Dark",
+        "backgroundColor": "#111e18"
       },
       {
         "label": "deer",
-        "title": "deer",
+        "title": "chordial companion",
         "url": "deer.html",
-        "width": 270,
-        "height": 500,
+        "width": 320,
+        "height": 560,
         "resizable": false,
         "alwaysOnTop": true,
-        "decorations": false
+        "decorations": false,
+        "theme": "Dark",
+        "backgroundColor": "#111e18"
       }
     ],
     "security": {
@@ -44,7 +48,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/chordial-sidecar"],
+    "externalBin": [
+      "binaries/chordial-sidecar"
+    ],
     "createUpdaterArtifacts": true
   },
   "plugins": {

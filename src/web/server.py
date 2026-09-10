@@ -448,21 +448,27 @@ class WebService:
         # same bucketing as the agenda payload (today / overdue / started-but-
         # undated), but rows keep their numeric ids for the focus api
         tasks = self.store.list_tasks(user_uuid)   # open only, scheduled order
+        # the evidence nudge (section 10.2): which rows keep waiting. read
+        # from the day's snapshot; a failed read flags nothing
+        from src.services import focus_day
+        flagged = focus_day.breakdown_flags(user_uuid)
         buckets = {"overdue": [], "today": [], "in_progress": [], "done": [],
                    "set_aside": []}
         for t in tasks:
             sched = t["scheduled"]
+            row = _task_row(t)
+            row["needs_breakdown"] = t["id"] in flagged
             if t.get("set_aside_on") == today_iso:
                 # parked for today (section 2): still open, still listed,
                 # but out of the day's live buckets so nothing nudges on it.
                 # tomorrow the stamp no longer matches and it simply returns.
-                buckets["set_aside"].append(_task_row(t))
+                buckets["set_aside"].append(row)
             elif sched == today_iso:
-                buckets["today"].append(_task_row(t))
+                buckets["today"].append(row)
             elif sched and sched < today_iso:
-                buckets["overdue"].append(_task_row(t))
+                buckets["overdue"].append(row)
             elif t["status"] == "in_progress":
-                buckets["in_progress"].append(_task_row(t))
+                buckets["in_progress"].append(row)
 
         # finished-today rides along so the deer window can show the day's
         # wins darkened-with-a-checkmark. closed_at is naive utc; "today" is

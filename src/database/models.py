@@ -584,6 +584,28 @@ class Task(Base):
     )
 
 
+class TaskSetAside(Base):
+    """the set-aside ledger: one row per (task, user-local day) the task
+    was parked on. `Task.set_aside_on` is the MUTABLE current stamp -
+    "tomorrow" and "bring back" clear it - so any read of a past day
+    (yesterday's digest under the morning brief, "was this on the list
+    yesterday") needs the durable history, not the stamp (sol, #88).
+    written by WorkspaceStore.update_task alongside the counter."""
+    __tablename__ = 'task_set_asides'
+
+    id = Column(Integer, primary_key=True)
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=False)
+    day = Column(Date, nullable=False)     # the user-local day parked
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('task_id', 'day', name='uq_task_set_asides_task_day'),
+        Index('ix_task_set_asides_user_day', 'user_uuid', 'day'),
+        {'sqlite_autoincrement': True},
+    )
+
+
 class TaskFocus(Base):
     """the per-task pomodoro clock behind the web focus view (src/web/).
     one row per (user, task): `accumulated_seconds` is banked time,

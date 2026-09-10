@@ -475,6 +475,14 @@ def test_a_bare_pause_still_stops_the_clock(rig):
     assert frozen_state["running"] is False
     assert frozen_state["frozen"][0]["run_seconds"] == 24 * 60
     assert "session.ended" not in _outbox_types(store)   # unbanked
+    # but the server hears the clock stop (sol, #88): a started with no
+    # transition after it would read as a running clock all afternoon
+    frozen = [e for e in store.pending() if e["type"] == "session.frozen"]
+    assert len(frozen) == 1
+    assert frozen[0]["payload"] == {
+        "task_id": frozen_state["frozen"][0]["task_id"],
+        "label": frozen_state["frozen"][0]["label"], "reason": "paused"}
+    assert frozen[0]["occurred_at"] == held["frozen_at"]
     clock.advance(minutes=30)
     assert engine.state()["frozen"][0]["run_seconds"] == 24 * 60  # stopped
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 import random
 from typing import Iterable, Optional
 
@@ -313,6 +314,26 @@ class ChordialDirector:
 # --- briefing enrichment (§4.4) -----------------------------------------------
 
 
+def presence_line(presence: Optional[str], platform: Optional[str],
+                  idle_minutes=None) -> Optional[str]:
+    """one ambient line for a scheduled tick (§5.2): whether they're at
+    the desk, and where this word lands. None when the plan carried no
+    presence (dev rigs, older plans)."""
+    if presence not in ("active", "idle", "absent"):
+        return None
+    where = platform or "the app"
+    if presence == "active":
+        return "they're at the desk right now; this lands in the app."
+    if presence == "idle":
+        idle = (f" ({int(idle_minutes)} min)"
+                if isinstance(idle_minutes, (int, float))
+                and not isinstance(idle_minutes, bool) else "")
+        return (f"they're connected but idle at the desk{idle}; "
+                f"this lands on {where}.")
+    return (f"they're away from the desk; this lands on {where}, "
+            "phone-sized.")
+
+
 class ChordialContext:
     """fills the chordial-shaped parts of a briefing: the user profile (one
     query when the caller didn't resolve it - e.g. the scheduler), the agenda
@@ -353,11 +374,41 @@ class ChordialContext:
         # deterministically, so the prompt only renders it. the plain
         # check-in carries no posture and keeps its exact bytes.
         posture_extras: dict = {}
+        prelude: Optional[str] = None
+        today = None
         if stimulus.extras.get("beat") == "morning":
-            posture, first_thing = await asyncio.to_thread(
+            posture, first_thing, prelude = await asyncio.to_thread(
                 self._morning_posture, user_uuid)
             posture_extras = {"checkin_posture": posture,
                               "first_thing": first_thing}
+        elif briefing_kind == "scheduled_checkin":
+            # every other tick is block-aware (§5.3): the day's snapshot
+            # picks mid_block / stuck / untouched / between / wrapped /
+            # quiet_day, and the prompt renders that one shape. ONE
+            # snapshot: the digest below renders from the same read, so
+            # the posture and the ambient block can never disagree about
+            # whether a clock is running (sol, #88)
+            today = await asyncio.to_thread(self._day_snapshot, user_uuid)
+            if today is not None:
+                from src.services import focus_day
+                posture, detail = focus_day.checkin_posture(today)
+                posture_extras = {"checkin_posture": posture,
+                                  "posture_detail": detail}
+
+        ambient = self._compose_ambient(
+            user_uuid,
+            stream_id=stimulus.stream_id,
+            include_agenda=(briefing_kind != "introduction"),
+            prelude=prelude,
+            today=today,
+        )
+        if briefing_kind == "scheduled_checkin":
+            # where this word lands, and whether they're there (§5.2)
+            line = presence_line(stimulus.extras.get("presence"),
+                                 stimulus.platform,
+                                 stimulus.extras.get("idle_minutes"))
+            if line:
+                ambient = "\n\n".join(p for p in (ambient, line) if p)
 
         return BriefingContext(
             kind=briefing_kind,
@@ -365,11 +416,7 @@ class ChordialContext:
             # see the privacy-safe previous-room summary: a multi-day intro
             # starts its second day in a FRESH room with an empty window, and
             # without the summary it would re-introduce itself from scratch
-            ambient_context=self._compose_ambient(
-                user_uuid,
-                stream_id=stimulus.stream_id,
-                include_agenda=(briefing_kind != "introduction"),
-            ),
+            ambient_context=ambient,
             extras={
                 "user_id": user_uuid,
                 "user_name": user_name,
@@ -404,11 +451,40 @@ class ChordialContext:
         except Exception:
             logger.exception("cycle read failed for the brief; tasks only")
         first_thing = pick_first_thing(payload, commitments)
-        return morning_posture(first_thing), first_thing
+        # the brief wraps yesterday (§13.3): the focus day digest for the
+        # previous local day rides as the ambient prelude. guarded on its
+        # own - a failed read costs the wrap-up, never the brief
+        yesterday = None
+        try:
+            from src.services import focus_day
+            from src.services.workspace.agenda import user_today
+
+            yesterday = focus_day.digest(
+                user_uuid, user_today(user_uuid) - timedelta(days=1))
+        except Exception:
+            logger.exception("yesterday's digest failed; brief continues "
+                             "without")
+        return morning_posture(first_thing), first_thing, yesterday
+
+    @staticmethod
+    def _day_snapshot(user_uuid: str):
+        """today's FocusDay for a follow-through tick, guarded: any
+        failure is None - no posture (the plain check-in, byte-identical
+        to before) and no digest."""
+        try:
+            from src.services import focus_day
+
+            return focus_day.snapshot(user_uuid)
+        except Exception:
+            logger.exception("day snapshot failed for %s; plain check-in",
+                             user_uuid)
+            return None
 
     def _compose_ambient(self, user_uuid: str,
                          stream_id: Optional[str] = None,
-                         include_agenda: bool = True) -> Optional[str]:
+                         include_agenda: bool = True,
+                         prelude: Optional[str] = None,
+                         today=None) -> Optional[str]:
         """the volatile 'now' zone, shaped by the room the turn is in.
         daily rooms hydrate from the day-shaped past (the previous
         daily/legacy summary - never a retro that happened to close last)
@@ -434,10 +510,28 @@ class ChordialContext:
             summary = store.latest_summary(user_uuid)
             if summary and summary["content"]:
                 parts.append("previously:\n" + summary["content"])
+            if prelude:
+                parts.append(prelude)
             digest = (self.agenda_service.get_digest(user_uuid)
                       if include_agenda and self.agenda_service else None)
             if digest:
                 parts.append(digest)
+            # the day so far (§5.1): what the desk has seen - banked runs,
+            # the clock, finishes, drifts - on ticks AND user turns, so she
+            # knows the day when you talk to her. a tick passes the
+            # snapshot its posture came from; a user turn reads one here.
+            # guarded on its own
+            if include_agenda:
+                try:
+                    from src.services import focus_day
+                    day_digest = (focus_day.render(today) if today is not None
+                                  else focus_day.digest(user_uuid))
+                except Exception:
+                    logger.exception("focus day digest failed; briefing "
+                                     "continues without")
+                    day_digest = None
+                if day_digest:
+                    parts.append(day_digest)
             # the arc's posture (phase 6c): present only once quiet has
             # been EARNED - untapered users (every fresh user) get their
             # exact pre-6c prompt bytes. guarded on its own: this line is

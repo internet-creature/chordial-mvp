@@ -474,6 +474,8 @@ async def main():
             platforms=list(router.platforms()),
             presence=(app_interface.presence_state
                       if app_interface is not None else None),
+            idle_of=(app_interface.idle_seconds
+                     if app_interface is not None else None),
         )
 
     try:

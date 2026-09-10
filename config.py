@@ -221,6 +221,10 @@ class Config:
     MORNING_RECENCY_DAYS = int(os.getenv("MORNING_RECENCY_DAYS", "4"))
     PROACTIVE_DAILY_CAP = int(os.getenv("PROACTIVE_DAILY_CAP", "2"))
     PROACTIVE_MIN_GAP_HOURS = float(os.getenv("PROACTIVE_MIN_GAP_HOURS", "3"))
+    # vel's sense of the day (docs/FOCUS_DOGFOOD_DESIGN.md §5.3): from this
+    # user-local hour on, a day that banked anything takes the `wrapped`
+    # posture (settle, no next-thing pressure) - the evening settle's hour
+    DAY_WRAP_HOUR = int(os.getenv("DAY_WRAP_HOUR", "20"))
 
     # compressor (legacy per-message compression; off by default in favor of
     # full-history context, which is both simpler and cache-friendly)

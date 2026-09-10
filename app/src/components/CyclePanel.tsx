@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchCycle, isAuthError } from "../api/client";
 import { startFocus } from "../api/sidecar";
-import { useLeafFlourish } from "./LeafFlourish";
 import type { CommitmentRow, CyclePayload } from "../api/types";
 import {
   capacityFill,
@@ -17,11 +16,10 @@ interface Props {
 }
 
 /** the shared cycle state on the home screen: theme, capacity, every
- * commitment with its real progress (banked minutes flow in from the deer
- * through the sync contract), and the one-tap door - a next action starts
- * a block on the deer's clock. */
+ * commitment with its real progress (banked minutes flow in from the
+ * companion through the sync contract), and the one-tap door - a next
+ * action starts a block on the companion's clock. */
 export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
-  const { flourish, leaves } = useLeafFlourish();
   const [view, setView] = useState<CyclePayload | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<number | null>(null);
@@ -71,7 +69,6 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
         pomMinutes,
       );
       setNote("timer started");
-      flourish();
     } catch (e) {
       // the sidecar answering with a refusal ("that task's clock is
       // already running") is a different truth than the sidecar being
@@ -97,7 +94,6 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
 
   return (
     <section className="cycle-panel">
-      {leaves}
       <header className="cycle-head">
         <div>
           <h3>cycle</h3>

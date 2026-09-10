@@ -113,10 +113,31 @@ subtitle, council heading, and sidebar helper text. Empty states, linking,
 archive, and timer controls use concise functional copy. Conversation content
 from the server is rendered as received.
 
-Successful task creation, focus starts, task completion, and setting a task aside
-produce a 1.6-second fan of leaf shapes in sage and blush. Focus starts from the
-cycle panel use the same effect. The canvas is decorative and ignores pointer
-events; reduced motion suppresses it. It resizes with the native companion form
-without restarting on ordinary re-renders, and unsuccessful actions do not
-trigger it. The browser suite checks visible leaf pixels, resize behavior,
-cleanup, failures, and reduced motion.
+Finishing a block produces a 1.6-second fan of leaf shapes in sage and blush.
+It is the one celebration: starting, adding, and setting aside update quietly.
+The canvas is decorative and ignores pointer events; reduced motion suppresses
+it. It resizes with the native companion form without restarting on ordinary
+re-renders, and a failed finish does not trigger it. The browser suite checks
+visible leaf pixels, resize behavior, cleanup, failures, and reduced motion.
+
+## Themes and colour roles
+
+Two themes share one set of token roles, keyed on `<html data-theme>`. The
+dark theme is the stylesheet default; the light theme is chordial's original
+lavender-and-blush palette. A two-position switch at the bottom of the sidebar
+chooses between them. The choice is stored in `localStorage` under
+`chordial.theme`, so the companion window follows through the storage event;
+with no choice stored, the system preference decides. Each window sets its own
+native title-bar theme to match, and the forced dark native theme is removed
+from `tauri.conf.json`.
+
+The roles do not change between themes. Sage means alive, banked, connected,
+or done: fill bars, live dots, the finish button, the overtime clock. Blush
+means the next action and what is declared: start, send, add, selection, the
+planned track, and focus rings. Rose is reserved for errors and stale data. The
+finish button's confirm state wears its own colour so the second press reads as
+a different question. Text-coloured accents use `-ink` variants that stay
+legible on both grounds.
+
+Chrome copy no longer uses woodland framing: the waiting phrases in the room
+are plain, and the stylesheet comments name surfaces by what they are.

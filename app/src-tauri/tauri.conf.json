@@ -17,9 +17,7 @@
         "width": 1100,
         "height": 720,
         "minWidth": 760,
-        "minHeight": 520,
-        "theme": "Dark",
-        "backgroundColor": "#111e18"
+        "minHeight": 520
       },
       {
         "label": "deer",
@@ -29,9 +27,7 @@
         "height": 560,
         "resizable": false,
         "alwaysOnTop": true,
-        "decorations": false,
-        "theme": "Dark",
-        "backgroundColor": "#111e18"
+        "decorations": false
       }
     ],
     "security": {

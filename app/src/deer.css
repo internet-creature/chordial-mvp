@@ -1,5 +1,5 @@
-/* the deer's window: a small soft card that sits on top of the day.
- * rides the clearing's tokens from styles.css. */
+/* the companion window: a small card that sits on top of the day.
+ * uses the shared tokens from styles.css. */
 
 .deer-window {
   height: 100vh;
@@ -43,10 +43,9 @@
   box-shadow: none;
 }
 
-/* the head (dogfood 2026-09-08): a small deer at the top-left and a
-   speech bubble that is always there - no pop-in, no caption under a
-   big emoji. the bubble carries the latest line, else a quiet fact
-   about the day. */
+/* the head (dogfood 2026-09-08): the companion's icon at the top-left
+   and a speech bubble that is always there - no pop-in. the bubble
+   carries the latest line, else a plain fact about the day. */
 .deer-head {
   width: 100%;
   display: flex;
@@ -58,32 +57,30 @@
 }
 
 .deer-bubble {
-  /* Sage speech, with a small tail toward the deer. */
+  /* the bubble and its tail share one solid colour */
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 34px;
   display: flex;
   align-items: center;
-  background: var(--sage-soft);
+  background: var(--bubble);
   border-radius: 16px;
   border-bottom-left-radius: 6px;
   padding: 8px 12px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--sage);
-  box-shadow: none;
+  color: var(--sage-ink);
 }
 
 .deer-bubble::before {
-  /* The tail meets the flat pine surface. */
   content: "";
   position: absolute;
   left: -5px;
   bottom: 7px;
   width: 12px;
   height: 12px;
-  background: var(--bg-raised);
+  background: var(--bubble);
   border-radius: 2px;
   transform: rotate(45deg) skew(8deg, 8deg);
 }
@@ -106,7 +103,7 @@
   flex-shrink: 0;
   margin-bottom: 1px;
   transition: transform 0.4s ease;
-  /* she is the handle: drag the deer to move the window */
+  /* the icon is the handle: drag it to move the window */
   cursor: grab;
 }
 
@@ -185,11 +182,11 @@
   display: block;
   font-size: 11px;
   font-weight: 700;
-  color: var(--sage);
+  color: var(--sage-ink);
 }
 
 .deer-clock.over {
-  color: var(--sage);
+  color: var(--sage-ink);
 }
 
 .deer-controls {
@@ -221,15 +218,13 @@
   border-radius: 999px;
   background: var(--sage);
   border: 1px solid transparent;
-  box-shadow: none;
-  color: var(--on-accent);
-  text-shadow: none;
+  color: var(--on-sage);
 }
 
+/* the second press is a different question, so it wears a different colour */
 .deer-finish.confirm {
-  background: var(--sage);
-  box-shadow: none;
-  text-shadow: none;
+  background: var(--accent-confirm);
+  color: var(--on-confirm);
 }
 
 .deer-pause:disabled,
@@ -276,7 +271,7 @@
 
 .deer-task.active {
   border-color: var(--sage);
-  background: var(--blush-soft);
+  background: var(--sage-soft);
 }
 
 .deer-task-title {
@@ -327,7 +322,7 @@
   top: 8px;
   font-size: 12px;
   font-weight: 800;
-  color: var(--sage);
+  color: var(--sage-ink);
 }
 
 .deer-task-note {
@@ -361,12 +356,11 @@
   width: 34px;
   flex-shrink: 0;
   border-radius: 999px;
-  background: var(--sage);
+  background: var(--accent);
   border: 1px solid transparent;
   color: var(--on-accent);
   font-weight: 800;
   font-size: 16px;
-  text-shadow: none;
 }
 
 .deer-add button:disabled {
@@ -418,7 +412,7 @@
 }
 
 .deer-offer-remove {
-  background: var(--sage-soft, var(--bg-hover));
+  background: var(--accent-soft);
   color: var(--ink);
 }
 
@@ -542,13 +536,12 @@
 
 .deer-task:hover,
 .deer-task:focus-visible {
-  border-color: var(--sage);
+  border-color: var(--accent);
   outline: none;
 }
 
 .deer-task.selected {
-  border-color: var(--sage);
-  box-shadow: none;
+  border-color: var(--accent);
 }
 
 /* an open row shows the whole name, however long (dogfood 2026-09-08) */
@@ -588,7 +581,7 @@
 
 .deer-task-play:hover:not(:disabled) {
   color: var(--on-accent);
-  background: var(--sage);
+  background: var(--accent);
   border-color: transparent;
 }
 
@@ -602,7 +595,7 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: var(--sage);
+  color: var(--sage-ink);
 }
 
 .deer-task-detail {
@@ -632,9 +625,8 @@
 
 .deer-chip.on {
   color: var(--on-accent);
-  background: var(--sage);
+  background: var(--accent);
   border-color: transparent;
-  text-shadow: none;
 }
 
 .deer-start {
@@ -643,10 +635,9 @@
   font-weight: 700;
   padding: 4px 12px;
   border-radius: 999px;
-  background: var(--sage);
+  background: var(--accent);
   border: 1px solid transparent;
   color: var(--on-accent);
-  text-shadow: none;
   cursor: pointer;
 }
 
@@ -775,7 +766,7 @@
 }
 
 .deer-bar-clock.over {
-  color: var(--sage);
+  color: var(--sage-ink);
 }
 
 .deer-bar-controls {
@@ -806,15 +797,14 @@
 }
 
 .deer-bar-btn.finish {
-  color: var(--on-accent);
+  color: var(--on-sage);
   background: var(--sage);
   border-color: transparent;
-  text-shadow: none;
 }
 
 .deer-bar-btn.finish.confirm {
-  background: var(--sage);
-  text-shadow: none;
+  color: var(--on-confirm);
+  background: var(--accent-confirm);
 }
 
 .deer-bar-btn:disabled {
@@ -823,8 +813,8 @@
 }
 
 .deer-bar-chip {
-  color: var(--blush);
-  background: var(--blush-soft);
+  color: var(--accent-ink);
+  background: var(--accent-soft);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -974,7 +964,7 @@
 }
 
 .deer-aside-door.letgo:hover:not(:disabled) {
-  color: var(--blush);
+  color: var(--rose-alert);
 }
 
 .deer-aside-door:disabled {
@@ -1014,7 +1004,7 @@
   text-transform: uppercase;
 }
 .deer-task:focus-visible {
-  outline: 2px solid var(--sage);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
 }
 .deer-bar-clock {

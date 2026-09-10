@@ -1,6 +1,22 @@
-/* The clearing: pine surfaces, sage controls, and blush as a small accent.
- * Shared by the main window and companion; no external fonts required. */
+/* The palette, shared by the main window and the companion. Two themes,
+ * chosen with the rail's switch and keyed on <html data-theme>; the dark
+ * one is the stylesheet default. The roles never change between them:
+ *
+ *   sage   alive, banked, connected, done: fills, live dots, finish
+ *   blush  the next action and what is declared: start, send, add,
+ *          selection, the planned track, focus rings
+ *   rose   errors and stale data only
+ *
+ * Fills carry their own text colour (--on-*); text-coloured accents use
+ * the -ink variants so they stay legible on both grounds. */
 :root {
+  --radius: 12px;
+  --radius-small: 7px;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
   --bg-deep: #0c1611;
   --bg-room: #111e18;
@@ -11,17 +27,65 @@
   --ink-faint: #89a08f;
   --blush: #e8b3c3;
   --blush-bright: #f0c6d2;
-  --blush-soft: rgba(232, 179, 195, 0.09);
+  --blush-soft: rgba(232, 179, 195, 0.12);
+  --accent: var(--blush);
+  --accent-ink: var(--blush);
+  --accent-soft: var(--blush-soft);
+  --accent-line: rgba(232, 179, 195, 0.22);
+  --on-accent: #2a1720;
+  --accent-confirm: #f4cfda;
+  --on-confirm: #3a1a28;
+  --planned: rgba(232, 179, 195, 0.28);
   --sage: #accfa4;
+  --sage-ink: var(--sage);
   --sage-soft: rgba(172, 207, 164, 0.1);
-  --accent: var(--sage);
-  --on-accent: #132519;
+  --on-sage: #132519;
+  --bubble: #1e2f25;
   --rose-alert: #f1acb6;
   --line: rgba(167, 198, 169, 0.16);
   --shadow: rgba(0, 0, 0, 0.18);
-  --radius: 12px;
-  --radius-small: 7px;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --card-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+  --glow: rgba(91, 127, 77, 0.18);
+  --scrollbar: #365240;
+  --selection: #48614b;
+  --selection-ink: #fff;
+}
+
+/* the light theme: chordial's original palette, lavender ground and
+ * blush accent, with the same roles as above */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-deep: #dcd6f2;
+  --bg-room: #fdf6fb;
+  --bg-raised: #ffffff;
+  --bg-hover: #f3ebf7;
+  --ink: #3a2a40;
+  --ink-dim: #8a7a92;
+  --ink-faint: #b3a6bb;
+  --blush: #e98fbb;
+  --blush-bright: #f4a6cb;
+  --blush-soft: rgba(244, 166, 203, 0.22);
+  --accent: var(--blush);
+  --accent-ink: #c0568c;
+  --accent-soft: var(--blush-soft);
+  --accent-line: rgba(233, 143, 187, 0.45);
+  --on-accent: #3a2a40;
+  --accent-confirm: #bf4a80;
+  --on-confirm: #ffffff;
+  --planned: rgba(233, 143, 187, 0.35);
+  --sage: #79c78d;
+  --sage-ink: #35804a;
+  --sage-soft: rgba(121, 199, 141, 0.18);
+  --on-sage: #16301d;
+  --bubble: #e3f4ea;
+  --rose-alert: #d9628f;
+  --line: rgba(201, 179, 236, 0.55);
+  --shadow: rgba(60, 40, 70, 0.16);
+  --card-shadow: 0 18px 50px -12px rgba(60, 40, 70, 0.5);
+  --glow: rgba(255, 255, 255, 0.38);
+  --scrollbar: #c9b3ec;
+  --selection: #e98fbb;
+  --selection-ink: #ffffff;
 }
 
 * {
@@ -58,7 +122,7 @@ button {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--blush);
+  outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
 }
 
@@ -140,8 +204,8 @@ textarea::placeholder {
 }
 
 .rail-link.active {
-  background: var(--sage-soft);
-  color: var(--sage);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
@@ -217,11 +281,7 @@ textarea::placeholder {
   display: grid;
   place-items: center;
   background:
-    radial-gradient(
-      ellipse at 25% 20%,
-      rgba(91, 127, 77, 0.18),
-      transparent 60%
-    ),
+    radial-gradient(ellipse at 25% 20%, var(--glow), transparent 60%),
     var(--bg-deep);
 }
 
@@ -235,7 +295,7 @@ textarea::placeholder {
   border-radius: var(--radius);
   padding: 34px;
   text-align: center;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--card-shadow);
 }
 
 .link-mark {
@@ -268,12 +328,10 @@ textarea::placeholder {
   margin-top: 6px;
   padding: 10px;
   border-radius: var(--radius-small);
-  background: var(--sage);
+  background: var(--accent);
   border: 1px solid transparent;
-  box-shadow: none;
   color: var(--on-accent);
   font-weight: 700;
-  text-shadow: none;
 }
 
 .link-card button[type="submit"]:disabled {
@@ -580,8 +638,8 @@ textarea::placeholder {
 }
 
 .line.mine .bubble {
-  background: var(--blush-soft);
-  border-color: rgba(232, 179, 195, 0.22);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
   border-radius: var(--radius);
   border-top-right-radius: 5px;
 }
@@ -619,7 +677,7 @@ textarea::placeholder {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--blush);
+  background: var(--accent-ink);
   animation: stir 1.2s ease-in-out infinite;
 }
 
@@ -700,12 +758,10 @@ textarea::placeholder {
 .composer button {
   padding: 11px 18px;
   border-radius: 7px;
-  background: var(--sage);
+  background: var(--accent);
   border: 1px solid transparent;
-  box-shadow: none;
   color: var(--on-accent);
   font-weight: 700;
-  text-shadow: none;
 }
 
 .composer button:disabled {
@@ -722,7 +778,7 @@ textarea::placeholder {
 }
 
 .line-retry:hover {
-  background: var(--blush-soft);
+  background: var(--accent-soft);
 }
 
 .line-retry:disabled {
@@ -806,7 +862,7 @@ textarea::placeholder {
 .cycle-bar-planned {
   position: absolute;
   inset: 0 auto 0 0;
-  background: var(--blush-soft);
+  background: var(--planned);
   border-radius: 999px;
 }
 
@@ -891,7 +947,7 @@ textarea::placeholder {
   font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--blush);
+  color: var(--accent-ink);
 }
 
 .next-action-text {
@@ -910,9 +966,8 @@ textarea::placeholder {
   padding: 5px 12px;
   font-size: 0.76rem;
   color: var(--on-accent);
-  background: var(--sage);
+  background: var(--accent);
   cursor: pointer;
-  box-shadow: none;
 }
 
 .next-action-start:hover {
@@ -1018,7 +1073,7 @@ textarea::placeholder {
   font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--blush);
+  color: var(--accent-ink);
   cursor: pointer;
   user-select: none;
 }
@@ -1058,11 +1113,11 @@ textarea::placeholder {
 /* Navigation, daily overview, and sync affordances. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #365240 transparent;
+  scrollbar-color: var(--scrollbar) transparent;
 }
 ::selection {
-  background: #48614b;
-  color: #fff;
+  background: var(--selection);
+  color: var(--selection-ink);
 }
 .rail-mark img {
   width: 38px;
@@ -1076,7 +1131,7 @@ textarea::placeholder {
   color: var(--ink-faint);
 }
 .rail-link.active .nav-glyph {
-  color: var(--sage);
+  color: var(--accent-ink);
 }
 .rail-footer {
   margin-top: auto;
@@ -1097,11 +1152,11 @@ textarea::placeholder {
   font-size: 12px;
 }
 .companion-launch:hover {
-  border-color: var(--sage);
+  border-color: var(--accent);
   background: var(--bg-hover);
 }
 .companion-launch > span {
-  color: var(--sage);
+  color: var(--accent-ink);
   font-size: 18px;
 }
 
@@ -1111,12 +1166,12 @@ textarea::placeholder {
   gap: 16px;
   padding: 20px;
   text-align: left;
-  background: var(--sage-soft);
+  background: var(--accent-soft);
   border: 1px solid var(--line);
   border-radius: 12px;
 }
 .room-invitation:hover {
-  border-color: var(--sage);
+  border-color: var(--accent);
   background: var(--bg-hover);
 }
 .room-invitation-icon {
@@ -1128,7 +1183,7 @@ textarea::placeholder {
   background: var(--bg-deep);
   border: 1px solid var(--line);
   border-radius: 10px;
-  color: var(--blush);
+  color: var(--accent-ink);
   font-size: 22px;
 }
 .room-invitation strong {
@@ -1138,7 +1193,7 @@ textarea::placeholder {
 
 .invitation-arrow {
   margin-left: auto;
-  color: var(--sage);
+  color: var(--accent-ink);
 }
 .task-sync {
   display: flex;
@@ -1174,7 +1229,7 @@ textarea::placeholder {
   border-radius: 6px;
 }
 .task-sync button:hover {
-  color: var(--sage);
+  color: var(--accent-ink);
   background: var(--bg-hover);
 }
 .link-mark img {
@@ -1245,11 +1300,65 @@ textarea::placeholder {
 }
 
 input[type="checkbox"] {
-  accent-color: var(--sage);
+  accent-color: var(--accent);
 }
 .link-mark img {
   display: block;
   margin: 0 auto;
+}
+
+/* the theme switch: two notches, one knob */
+.theme-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 0 2px;
+  font: 10px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.theme-track {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 58px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-raised);
+}
+.theme-track:hover {
+  border-color: var(--accent);
+}
+.theme-notch {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ink-faint);
+}
+.theme-track[aria-checked="false"] .theme-notch:first-child,
+.theme-track[aria-checked="true"] .theme-notch:last-child {
+  color: var(--on-accent);
+}
+.theme-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  transition: transform 0.18s ease;
+}
+.theme-track[aria-checked="true"] .theme-knob {
+  transform: translateX(30px);
 }
 
 /* Visual feedback belongs to successful actions, not navigation. */

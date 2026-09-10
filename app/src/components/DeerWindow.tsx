@@ -470,7 +470,6 @@ export default function DeerWindow() {
       setSelectedId(null);
       setEditingScope(false);
       setPeeking(false); // a fresh start goes to the bar
-      flourish();
     } catch (err) {
       showLine(err instanceof Error ? err.message : "action failed — try again");
     } finally {
@@ -546,7 +545,6 @@ export default function DeerWindow() {
     setBusy(true);
     try {
       await patchTask(token, task.id, { set_aside: true });
-      flourish();
       setSelectedId(null);
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t set that aside");
@@ -752,7 +750,6 @@ export default function DeerWindow() {
     setBusy(true);
     try {
       await createTask(token, title);
-      flourish();
       setNewTitle("");
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t add that");

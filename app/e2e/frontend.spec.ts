@@ -2,6 +2,7 @@ import {
   test,
   expect,
   type BrowserContext,
+  type Page,
   type WebSocketRoute,
 } from "@playwright/test";
 import type { FocusState } from "../src/api/sidecar";
@@ -155,6 +156,7 @@ async function mockWorkspace(context: BrowserContext, linked = true) {
       } else body = { messages };
     } else if (
       path.startsWith("/api/v1/tasks/") &&
+      !path.endsWith("/status") &&
       route.request().method() === "PATCH"
     ) {
       const id = Number(path.split("/").pop());
@@ -180,8 +182,11 @@ async function mockWorkspace(context: BrowserContext, linked = true) {
     else if (path === "/api/v1/cycle") body = { cycle: null };
     else if (path === "/api/v1/rooms/cycle") body = { doors: null };
     else if (path === "/api/v1/arc") body = { arc: null };
-    else if (url.port === "8485")
+    else if (path.endsWith("/status")) body = { ok: true };
+    else if (url.port === "8485") {
+      if (path === "/v1/focus/finish") focus = { running: false, banked: {} };
       body = { focus, linked: true, line: null, sync_error: null };
+    }
     await route.fulfill({ json: body });
   });
   return {
@@ -329,31 +334,34 @@ test("sidebar opens and reopens the companion in browser preview", async ({
   await expect((await second).getByText("tasks up to date")).toBeVisible();
 });
 
-test("forest layouts: home, room, archive, companion and timer", async ({
+test("layouts: home, room, archive, companion and timer", async ({
   page,
   context,
 }) => {
   const mock = await mockWorkspace(context);
+  // no stored choice: the system preference decides, so ask for dark
+  await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/");
   await expect(page.getByText("tasks up to date")).toBeVisible();
-  await page.screenshot({ path: "artifacts/forest-home.png" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.screenshot({ path: "artifacts/home.png" });
   await page.getByRole("button", { name: "Enter today’s room" }).click();
   await expect(
     page.getByText("settles into the clearing", { exact: false }),
   ).toBeVisible();
-  await page.screenshot({ path: "artifacts/forest-room.png" });
+  await page.screenshot({ path: "artifacts/room.png" });
   await page.setViewportSize({ width: 760, height: 520 });
   await expect(
     page.getByRole("button", { name: "open companion" }),
   ).toBeInViewport();
-  await page.screenshot({ path: "artifacts/forest-room-small.png" });
+  await page.screenshot({ path: "artifacts/room-small.png" });
   await page.setViewportSize({ width: 1100, height: 720 });
   await page.getByRole("button", { name: "home", exact: true }).click();
   await page.getByRole("button", { name: /Wed, Sep 9/ }).click();
   await expect(
     page.getByText("settles into the clearing", { exact: false }),
   ).toBeVisible();
-  await page.screenshot({ path: "artifacts/forest-archive.png" });
+  await page.screenshot({ path: "artifacts/archive.png" });
   await page.setViewportSize({ width: 320, height: 560 });
   await page.goto("/deer.html");
   await expect(page.getByText("tasks up to date")).toBeVisible();
@@ -363,7 +371,7 @@ test("forest layouts: home, room, archive, companion and timer", async ({
       exact: true,
     })
     .click();
-  await page.screenshot({ path: "artifacts/forest-companion.png" });
+  await page.screenshot({ path: "artifacts/companion.png" });
   mock.setFocus({
     running: true,
     banked: {},
@@ -374,7 +382,7 @@ test("forest layouts: home, room, archive, companion and timer", async ({
   });
   await page.setViewportSize({ width: 440, height: 56 });
   await expect(page.getByRole("button", { name: "show tasks" })).toBeVisible();
-  await page.screenshot({ path: "artifacts/forest-timer.png" });
+  await page.screenshot({ path: "artifacts/timer.png" });
 });
 
 test("link screen uses the app identity", async ({ page, context }) => {
@@ -384,7 +392,7 @@ test("link screen uses the app identity", async ({ page, context }) => {
   await page
     .locator(".link-mark img")
     .evaluate((img: HTMLImageElement) => img.decode());
-  await page.screenshot({ path: "artifacts/forest-link.png" });
+  await page.screenshot({ path: "artifacts/link.png" });
 });
 
 test("an initial task outage is never presented as an empty day", async ({
@@ -412,7 +420,7 @@ test("interface omits decorative labels", async ({ page, context }) => {
   await expect(page.getByText("tasks up to date")).toBeVisible();
   await expect(
     page.getByText(
-      /your daily clearing|a little room to grow|the council|beside you|a place to untangle/,
+      /your daily clearing|a little room to grow|the council|beside you|a place to untangle|the den|the burrow|the meadow|the clearing/,
     ),
   ).toHaveCount(0);
   await expect(
@@ -420,25 +428,39 @@ test("interface omits decorative labels", async ({ page, context }) => {
   ).toBeVisible();
 });
 
-test("a successful action draws leaves, survives resize and re-render, then clears", async ({
+const RUNNING = {
+  running: true,
+  banked: {},
+  task_id: 3,
+  label: "Chordial Willowden: sketch the first clearing",
+  started_at: new Date(Date.now() - 432_000).toISOString(),
+  target_minutes: 25,
+};
+
+/** the bar's two-press finish: the first press asks, the second lands */
+async function finishFromBar(page: Page) {
+  await page.getByRole("button", { name: "finished", exact: true }).click();
+  await page.getByRole("button", { name: /early/ }).click();
+}
+
+test("finishing a block draws leaves, survives resize and re-render, then clears", async ({
   page,
   context,
 }) => {
-  await mockWorkspace(context);
+  const mock = await mockWorkspace(context);
   await page.clock.install();
   await page.setViewportSize({ width: 320, height: 560 });
   await page.goto("/deer.html");
   await expect(page.getByText("tasks up to date")).toBeVisible();
-  await page.clock.pauseAt(new Date());
-  await page
-    .getByRole("button", {
-      name: "Chordial Willowden: sketch the first clearing",
-      exact: true,
-    })
-    .click();
-  await page
-    .getByRole("button", { name: "set aside for today", exact: true })
-    .click();
+  // the page's fake clock runs a few ms ahead of this process: pause just ahead
+  await page.clock.pauseAt(Date.now() + 1_000);
+  // quieter actions do not celebrate: adding a task draws nothing
+  await page.getByRole("textbox", { name: "New task title" }).fill("a task");
+  await page.getByRole("button", { name: "Add task" }).click();
+  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
+  mock.setFocus(RUNNING);
+  await page.setViewportSize({ width: 440, height: 56 });
+  await finishFromBar(page);
   const leaves = page.locator(".leaf-flourish");
   await expect(leaves).toHaveCount(1);
   await page.clock.runFor(300);
@@ -451,41 +473,66 @@ test("a successful action draws leaves, survives resize and re-render, then clea
     }),
   ).toBe(true);
   await page.screenshot({ path: "artifacts/leaf-flourish.png" });
-  await page
-    .getByRole("textbox", { name: "New task title" })
-    .fill("another task");
-  await page.setViewportSize({ width: 440, height: 56 });
+  // the clock stopped, so the window grows back to the full form mid-burst
+  await page.setViewportSize({ width: 320, height: 560 });
   await page.clock.runFor(300);
-  await expect(leaves).toHaveJSProperty("height", 56);
+  await expect(leaves).toHaveJSProperty("height", 560);
   await page.clock.runFor(1050);
   await expect(leaves).toHaveCount(0);
 });
 
-test("failed actions and reduced motion do not show leaves", async ({
+test("a failed finish and reduced motion do not show leaves", async ({
+  page,
+  context,
+}) => {
+  const mock = await mockWorkspace(context);
+  await page.setViewportSize({ width: 440, height: 56 });
+  await page.goto("/deer.html");
+  mock.setFocus(RUNNING);
+  await context.route("**/v1/focus/finish", (route) =>
+    route.fulfill({ status: 503, json: { error: "finish failed" } }),
+  );
+  await finishFromBar(page);
+  await expect(page.getByText("finish failed")).toBeVisible();
+  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
+  await context.unroute("**/v1/focus/finish");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await finishFromBar(page);
+  await expect(
+    page.getByRole("button", { name: "finished", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
+});
+
+test("the theme switch is shared by both windows and remembered", async ({
   page,
   context,
 }) => {
   await mockWorkspace(context);
-  await page.goto("/deer.html");
-  await page
-    .getByRole("button", {
-      name: "Chordial Willowden: sketch the first clearing",
-      exact: true,
-    })
-    .click();
-  await context.route("**/api/v1/tasks/3", (route) =>
-    route.fulfill({ status: 503, json: { error: "task update failed" } }),
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+  await expect(page.getByText("tasks up to date")).toBeVisible();
+  const html = page.locator("html");
+  await expect(html).toHaveAttribute("data-theme", "dark");
+  const toggle = page.getByRole("switch", { name: "theme" });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await toggle.click();
+  await expect(html).toHaveAttribute("data-theme", "light");
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await page.screenshot({ path: "artifacts/home-light.png" });
+  // the companion, already open, follows without a reload
+  const companion = await context.newPage();
+  await companion.setViewportSize({ width: 320, height: 560 });
+  await companion.goto("/deer.html");
+  await expect(companion.locator("html")).toHaveAttribute("data-theme", "light");
+  await companion.screenshot({ path: "artifacts/companion-light.png" });
+  await toggle.click();
+  await expect(companion.locator("html")).toHaveAttribute("data-theme", "dark");
+  // the choice survives a reload
+  await page.reload();
+  await expect(html).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("switch", { name: "theme" })).toHaveAttribute(
+    "aria-checked",
+    "true",
   );
-  await page
-    .getByRole("button", { name: "set aside for today", exact: true })
-    .click();
-  await expect(page.getByText("task update failed")).toBeVisible();
-  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
-  await context.unroute("**/api/v1/tasks/3");
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page
-    .getByRole("button", { name: "set aside for today", exact: true })
-    .click();
-  await expect(page.locator(".deer-task.aside")).toBeVisible();
-  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
 });

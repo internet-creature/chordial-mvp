@@ -2,6 +2,7 @@ import type { CouncilMember } from "../api/types";
 import { memberHue } from "../lib/council";
 import { useState } from "react";
 import { showCompanion } from "../lib/tauriWindow";
+import { useTheme } from "../lib/useTheme";
 
 interface Props {
   council: CouncilMember[];
@@ -14,6 +15,7 @@ interface Props {
 export default function PresenceRail({ council, view, onNavigate }: Props) {
   const visible = council.filter((m) => m.status !== "declined");
   const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useTheme();
 
   return (
     <nav className="rail" aria-label="Main navigation">
@@ -97,6 +99,25 @@ export default function PresenceRail({ council, view, onNavigate }: Props) {
             {error}
           </p>
         )}
+        <div className="theme-switch">
+          <span id="theme-label">theme</span>
+          <button
+            className="theme-track"
+            role="switch"
+            aria-checked={theme === "dark"}
+            aria-labelledby="theme-label"
+            title={theme === "dark" ? "switch to light" : "switch to dark"}
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          >
+            <span className="theme-notch" aria-hidden="true">
+              ☀
+            </span>
+            <span className="theme-notch" aria-hidden="true">
+              ☾
+            </span>
+            <span className="theme-knob" aria-hidden="true" />
+          </button>
+        </div>
       </div>
     </nav>
   );

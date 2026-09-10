@@ -1,4 +1,4 @@
-// Muted botanical hues with readable contrast on the forest surfaces.
+// each member's hue for avatar rings and name chips: muted, legible on both themes.
 export const COUNCIL_HUES: Record<string, string> = {
   vel: "#e8b3c3",
   pip: "#dab58c",

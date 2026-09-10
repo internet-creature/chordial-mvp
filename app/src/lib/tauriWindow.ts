@@ -26,6 +26,16 @@ export async function showCompanion(): Promise<void> {
   await invoke("show_companion");
 }
 
+/** the native title bar and controls follow the chosen theme */
+export async function setNativeTheme(theme: "dark" | "light"): Promise<void> {
+  if (!inTauri()) return;
+  try {
+    await getCurrentWindow().setTheme(theme);
+  } catch {
+    // an older runtime without the call keeps its default chrome
+  }
+}
+
 export function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

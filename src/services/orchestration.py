@@ -161,6 +161,16 @@ class ChordialDirector:
                     ),
                 ),
             ])
+        if kind == "stuck":
+            # the "i'm stuck" turn (docs/STUCK_MODE_DESIGN.md 5.2): pip as
+            # the house's background focus specialist, met or not. tool
+            # output only - the card is the reply, prose is discarded (a
+            # silent line with text is an errored line, and the proposals
+            # it wrote are already on the episode by then)
+            return self._finalize(stimulus, [
+                ScriptLine(speaker="pip", response="silent", delivery="none",
+                           event_context=self._dm_context(stimulus, "pip")),
+            ])
         if kind == "introduction":
             speaker = stimulus.addressed[0] if stimulus.addressed else self.fallback
             return self._finalize(stimulus, [self._dm_line(stimulus, speaker)])
@@ -365,6 +375,8 @@ class ChordialContext:
             briefing_kind = "introduction"
         elif stimulus.kind == "scheduled_tick":
             briefing_kind = "scheduled_checkin"
+        elif stimulus.kind == "stuck":
+            briefing_kind = "stuck"
         else:
             briefing_kind = "user_message"
 
@@ -395,6 +407,20 @@ class ChordialContext:
                 posture_extras = {"checkin_posture": posture,
                                   "posture_detail": detail}
 
+        stuck_extras: dict = {}
+        if briefing_kind == "stuck":
+            # the stuck brief (STUCK_MODE_DESIGN.md 5.2) reads the same
+            # snapshot the digest renders from; the episode id rides to the
+            # tool through the briefing extras
+            today = await asyncio.to_thread(self._day_snapshot, user_uuid)
+            stuck_extras = {
+                "stuck_episode_id": stimulus.extras.get("stuck_episode_id"),
+                "stuck_generation": stimulus.extras.get("stuck_generation", 1),
+                "stuck_rejected_kinds": list(
+                    stimulus.extras.get("stuck_rejected_kinds") or []),
+                "stuck_surface": stimulus.extras.get("stuck_surface") or "companion",
+            }
+
         ambient = self._compose_ambient(
             user_uuid,
             stream_id=stimulus.stream_id,
@@ -402,6 +428,11 @@ class ChordialContext:
             prelude=prelude,
             today=today,
         )
+        if briefing_kind == "stuck":
+            brief = await asyncio.to_thread(
+                self._stuck_brief, user_uuid, today, stuck_extras)
+            if brief:
+                ambient = "\n\n".join(p for p in (ambient, brief) if p)
         if briefing_kind == "scheduled_checkin":
             # where this word lands, and whether they're there (§5.2)
             line = presence_line(stimulus.extras.get("presence"),
@@ -423,8 +454,25 @@ class ChordialContext:
                 "user_timezone": user_timezone or "UTC",
                 "user_pronouns": user_pronouns,
                 **posture_extras,
+                **stuck_extras,
             },
         )
+
+    @staticmethod
+    def _stuck_brief(user_uuid: str, today, extras: dict) -> Optional[str]:
+        """the stuck brief block, guarded: a failed read costs the brief
+        (the turn still runs on the ambient it has), never the turn."""
+        try:
+            from src.services import stuck
+            recent = stuck.StuckStore().recent_summaries(
+                user_uuid, exclude_uuid=extras.get("stuck_episode_id"))
+            ev = stuck.gather(user_uuid, today=today, recent=recent)
+            return stuck.render_brief(
+                ev, surface=extras.get("stuck_surface") or "companion",
+                rejected_kinds=extras.get("stuck_rejected_kinds") or ())
+        except Exception:
+            logger.exception("stuck brief failed for %s", user_uuid)
+            return None
 
     def _morning_posture(self, user_uuid: str) -> tuple:
         """(posture, first_thing) for the brief. pure db reads, guarded:

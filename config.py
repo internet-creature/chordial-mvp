@@ -265,6 +265,19 @@ class Config:
     REWIND_TETHER_SWEEP_SECONDS = float(
         os.getenv("REWIND_TETHER_SWEEP_SECONDS", "60"))
 
+    # stuck mode (docs/STUCK_MODE_DESIGN.md sections 2.1 + 5.1): the turn
+    # is the main path and waiting for it is welcome, but at TIMEOUT the
+    # fallback ladder becomes the card (and stays - v0 never swaps a shown
+    # fallback under the person's hand). an episode nobody touched for TTL
+    # minutes is closed by the sweep, so correctness never depends on an
+    # unload request arriving. numbers live in the design doc - change them
+    # there first.
+    STUCK_TURN_TIMEOUT_SECONDS = float(
+        os.getenv("STUCK_TURN_TIMEOUT_SECONDS", "30"))
+    STUCK_EPISODE_TTL_MINUTES = int(
+        os.getenv("STUCK_EPISODE_TTL_MINUTES", "30"))
+    STUCK_SWEEP_SECONDS = float(os.getenv("STUCK_SWEEP_SECONDS", "60"))
+
     # edwin's cycle scorer (docs/ROOMS_DESIGN.md section 8, phase 6): how
     # often the watcher looks for sealed-but-unassessed cycles; the grace
     # period between a cycle's close and its scoring (the evidence

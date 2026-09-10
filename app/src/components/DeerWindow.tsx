@@ -79,7 +79,7 @@ import {
   windowPosition,
   workArea,
 } from "../lib/tauriWindow";
-import Confetti from "./Confetti";
+import { useLeafFlourish } from "./LeafFlourish";
 import InlineContent from "./InlineContent";
 
 const LINE_LINGER_MS = 12000;
@@ -125,7 +125,7 @@ export default function DeerWindow() {
   const [busy, setBusy] = useState(false);
   const [confirmingFinish, setConfirmingFinish] = useState(false);
   const [confirmingPause, setConfirmingPause] = useState(false);
-  const [celebrating, setCelebrating] = useState(false);
+  const { flourish, leaves } = useLeafFlourish();
   const [offer, setOffer] = useState<RewindOffer | null>(null);
   const [cardExpanded, setCardExpanded] = useState(false);
   const [showAlt, setShowAlt] = useState(false);
@@ -470,8 +470,9 @@ export default function DeerWindow() {
       setSelectedId(null);
       setEditingScope(false);
       setPeeking(false); // a fresh start goes to the bar
+      flourish();
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -538,13 +539,14 @@ export default function DeerWindow() {
       if (!stopped) {
         // a sidecar outage or a refused transition: the clock may still
         // be counting, so the task stays where it is (sol, #87)
-        showLine("couldn’t stop the clock — she stays on the list");
+        showLine("couldn’t pause the timer — task unchanged");
         return;
       }
     }
     setBusy(true);
     try {
       await patchTask(token, task.id, { set_aside: true });
+      flourish();
       setSelectedId(null);
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t set that aside");
@@ -575,7 +577,7 @@ export default function DeerWindow() {
       await patchTask(token, task.id, patch);
       setAsideId(null);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -608,7 +610,7 @@ export default function DeerWindow() {
       showLine(result.line);
       return !result.focus.running;
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "action failed — try again");
       return false;
     } finally {
       setBusy(false);
@@ -644,10 +646,10 @@ export default function DeerWindow() {
       if (result.offer !== undefined) setOffer(result.offer ?? null);
       showLine(result.line);
       if (result.held) return; // frozen: the answer will finish it
-      setCelebrating(true);
+      flourish();
       await markTaskDone(taskId);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -716,11 +718,11 @@ export default function DeerWindow() {
         );
       }
       if (result.run?.reason === "finished") {
-        setCelebrating(true);
+        flourish();
         await markTaskDone(resolved.task_id);
       }
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -735,7 +737,7 @@ export default function DeerWindow() {
       setOffer(result.offer ?? null);
       setApplied(null);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showLine(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -750,6 +752,7 @@ export default function DeerWindow() {
     setBusy(true);
     try {
       await createTask(token, title);
+      flourish();
       setNewTitle("");
     } catch (err) {
       showLine(err instanceof Error ? err.message : "couldn’t add that");
@@ -784,8 +787,8 @@ export default function DeerWindow() {
         aria-pressed={onTop !== false}
         title={
           onTop === false
-            ? "keep her on top of other windows"
-            : "let other windows cover her"
+            ? "keep on top"
+            : "unpin window"
         }
       >
         📌
@@ -809,27 +812,20 @@ export default function DeerWindow() {
     </div>
   );
 
-  // the celebration lives outside both forms: a den <-> bar switch
-  // mid-burst must neither restart it nor lose it (the canvas is
-  // positioned against the viewport, so it covers whichever form is on)
-  const confetti = celebrating && (
-    <Confetti onDone={() => setCelebrating(false)} />
-  );
-
   // --- the bar: the slim form while a clock runs (§11.1) ----------------
 
   if (form === "bar") {
     return (
       <>
-      {confetti}
+      {leaves}
       <div className="deer-bar" data-tauri-drag-region="true">
         <button
           className={`deer-bar-deer${overtime ? " perked" : ""}${
             activity?.blocked ? " hushed" : ""
           }`}
           onClick={() => setPeeking(true)}
-          title="open the den — the clock keeps running"
-          aria-label="open the den"
+          title="show tasks — timer keeps running"
+          aria-label="show tasks"
         >
           🦌
         </button>
@@ -841,7 +837,7 @@ export default function DeerWindow() {
           ) : (
             <span className="deer-bar-title" data-tauri-drag-region="true">
               {activity?.blocked ? (
-                "hushed — meeting nearby"
+                "notifications paused"
               ) : runningLabel ? (
                 <>
                   {runningLabel.title}
@@ -853,7 +849,7 @@ export default function DeerWindow() {
                   )}
                 </>
               ) : (
-                "on watch beside you"
+                "timer running"
               )}
             </span>
           )}
@@ -877,7 +873,7 @@ export default function DeerWindow() {
                 setPeeking(true);
                 expandCard();
               }}
-              title="a small question is waiting in the den"
+              title="review time adjustment"
               aria-label="open the question"
             >
               ?
@@ -943,13 +939,13 @@ export default function DeerWindow() {
   // when she couldn't be moved at all).
   return (
     <>
-    {confetti}
+    {leaves}
     <div className="deer-window" data-tauri-drag-region="true">
       <div className="deer-drag" data-tauri-drag-region="true">
         <span className="deer-caption" data-tauri-drag-region="true">companion</span>
         <span
           className={`deer-link-dot${connected ? " on" : ""}`}
-          title={connected ? "the deer is home" : "looking for the sidecar…"}
+          title={connected ? "timer connected" : "timer disconnected"}
         />
         {windowControls(false)}
       </div>
@@ -974,7 +970,7 @@ export default function DeerWindow() {
               content={
                 line ??
                 (!today
-                  ? (token ? (taskError ? "your tasks are out of reach for now" : "finding your day…") : "a little company, whenever you need")
+                  ? (token ? (taskError ? "tasks unavailable" : "loading tasks…") : "link your device to see tasks")
                   : bubbleFallback({
                   blocked: !!activity?.blocked,
                   drifting: !!activity?.drifting,
@@ -996,7 +992,7 @@ export default function DeerWindow() {
             <p className="deer-offer-line">
               {offer.frozen
                 ? `clock's stopped — answering will ${frozenVerb(offer.frozen_reason)}. `
-                : "*ears perk* welcome back. "}
+                : ""}
               {quietLine(offer)}
             </p>
             <div className="deer-offer-actions">
@@ -1189,9 +1185,9 @@ export default function DeerWindow() {
             <button
               className="deer-to-bar"
               onClick={() => setPeeking(false)}
-              title="back to the slim bar"
+              title="show timer"
             >
-              back to the bar
+              show timer
             </button>
           )}
         </div>
@@ -1547,7 +1543,7 @@ export default function DeerWindow() {
               doneTasks.length === 0 &&
               asideTasks.length === 0 && (
                 <li className="deer-empty">
-                  nothing on the list yet — jot one below.
+                  no tasks scheduled.
                 </li>
               )}
           </ul>
@@ -1566,7 +1562,7 @@ export default function DeerWindow() {
         </div>
       ) : (
         <p className="deer-unlinked">
-          link chordial in the main window first — then i can see your day.
+          link your device in the main window.
         </p>
       )}
 

@@ -81,6 +81,6 @@ export const SCOPE_COPY = {
   asideHeading: "set aside",
   tomorrow: "tomorrow",
   bringBack: "bring back",
-  letGo: "let it go",
-  asideNote: "parked for today — no pressure, it comes back tomorrow",
+  letGo: "backlog",
+  asideNote: "returns tomorrow",
 } as const;

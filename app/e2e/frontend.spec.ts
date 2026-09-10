@@ -350,7 +350,9 @@ test("forest layouts: home, room, archive, companion and timer", async ({
   await page.setViewportSize({ width: 1100, height: 720 });
   await page.getByRole("button", { name: "home", exact: true }).click();
   await page.getByRole("button", { name: /Wed, Sep 9/ }).click();
-  await expect(page.getByText("settles into the clearing", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("settles into the clearing", { exact: false }),
+  ).toBeVisible();
   await page.screenshot({ path: "artifacts/forest-archive.png" });
   await page.setViewportSize({ width: 320, height: 560 });
   await page.goto("/deer.html");
@@ -371,30 +373,119 @@ test("forest layouts: home, room, archive, companion and timer", async ({
     target_minutes: 25,
   });
   await page.setViewportSize({ width: 440, height: 56 });
-  await expect(
-    page.getByRole("button", { name: "open the den" }),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "show tasks" })).toBeVisible();
   await page.screenshot({ path: "artifacts/forest-timer.png" });
 });
 
 test("link screen uses the app identity", async ({ page, context }) => {
   await mockWorkspace(context, false);
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "step inside" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "link device" })).toBeVisible();
   await page
     .locator(".link-mark img")
     .evaluate((img: HTMLImageElement) => img.decode());
   await page.screenshot({ path: "artifacts/forest-link.png" });
 });
 
-test("an initial task outage is never presented as an empty day", async ({ page, context }) => {
+test("an initial task outage is never presented as an empty day", async ({
+  page,
+  context,
+}) => {
   const mock = await mockWorkspace(context);
   mock.setOffline(true);
   await page.goto("/deer.html");
-  await expect(page.getByText("can’t reach your tasks — retrying")).toBeVisible();
-  await expect(page.getByText("your tasks are out of reach for now")).toBeVisible();
-  await expect(page.getByText("nothing on the list yet", { exact: false })).toHaveCount(0);
+  await expect(
+    page.getByText("can’t reach your tasks — retrying"),
+  ).toBeVisible();
+  await expect(page.getByText("tasks unavailable")).toBeVisible();
+  await expect(
+    page.getByText("nothing on the list yet", { exact: false }),
+  ).toHaveCount(0);
   mock.setOffline(false);
   await page.getByRole("button", { name: "Refresh tasks" }).click();
   await expect(page.getByText("tasks up to date")).toBeVisible();
+});
+
+test("interface omits decorative labels", async ({ page, context }) => {
+  await mockWorkspace(context);
+  await page.goto("/");
+  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await expect(
+    page.getByText(
+      /your daily clearing|a little room to grow|the council|beside you|a place to untangle/,
+    ),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "open companion" }),
+  ).toBeVisible();
+});
+
+test("a successful action draws leaves, survives resize and re-render, then clears", async ({
+  page,
+  context,
+}) => {
+  await mockWorkspace(context);
+  await page.clock.install();
+  await page.setViewportSize({ width: 320, height: 560 });
+  await page.goto("/deer.html");
+  await expect(page.getByText("tasks up to date")).toBeVisible();
+  await page.clock.pauseAt(new Date());
+  await page
+    .getByRole("button", {
+      name: "Chordial Willowden: sketch the first clearing",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("button", { name: "set aside for today", exact: true })
+    .click();
+  const leaves = page.locator(".leaf-flourish");
+  await expect(leaves).toHaveCount(1);
+  await page.clock.runFor(300);
+  expect(
+    await leaves.evaluate((canvas: HTMLCanvasElement) => {
+      const pixels = canvas
+        .getContext("2d")!
+        .getImageData(0, 0, canvas.width, canvas.height).data;
+      return pixels.some((value, index) => index % 4 === 3 && value > 0);
+    }),
+  ).toBe(true);
+  await page.screenshot({ path: "artifacts/leaf-flourish.png" });
+  await page
+    .getByRole("textbox", { name: "New task title" })
+    .fill("another task");
+  await page.setViewportSize({ width: 440, height: 56 });
+  await page.clock.runFor(300);
+  await expect(leaves).toHaveJSProperty("height", 56);
+  await page.clock.runFor(1050);
+  await expect(leaves).toHaveCount(0);
+});
+
+test("failed actions and reduced motion do not show leaves", async ({
+  page,
+  context,
+}) => {
+  await mockWorkspace(context);
+  await page.goto("/deer.html");
+  await page
+    .getByRole("button", {
+      name: "Chordial Willowden: sketch the first clearing",
+      exact: true,
+    })
+    .click();
+  await context.route("**/api/v1/tasks/3", (route) =>
+    route.fulfill({ status: 503, json: { error: "task update failed" } }),
+  );
+  await page
+    .getByRole("button", { name: "set aside for today", exact: true })
+    .click();
+  await expect(page.getByText("task update failed")).toBeVisible();
+  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
+  await context.unroute("**/api/v1/tasks/3");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page
+    .getByRole("button", { name: "set aside for today", exact: true })
+    .click();
+  await expect(page.locator(".deer-task.aside")).toBeVisible();
+  await expect(page.locator(".leaf-flourish")).toHaveCount(0);
 });

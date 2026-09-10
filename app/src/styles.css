@@ -152,16 +152,6 @@ textarea::placeholder {
   margin-top: 4px;
 }
 
-.rail-label {
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  padding: 0 10px;
-  font-family: var(--mono);
-}
-
 .rail-council ul {
   list-style: none;
   margin: 0;
@@ -257,11 +247,6 @@ textarea::placeholder {
   margin: 0;
   font-size: 22px;
   letter-spacing: 0.01em;
-}
-
-.link-lede {
-  margin: 0 0 6px;
-  color: var(--ink-dim);
 }
 
 .field {
@@ -1084,15 +1069,7 @@ textarea::placeholder {
   height: 38px;
   border-radius: 10px;
 }
-.brand-caption {
-  display: block;
-  margin-top: 2px;
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 400;
-  letter-spacing: 0;
-  color: var(--ink-faint);
-}
+
 .nav-glyph {
   width: 20px;
   font: 16px var(--mono);
@@ -1127,19 +1104,7 @@ textarea::placeholder {
   color: var(--sage);
   font-size: 18px;
 }
-.rail-hint {
-  margin: 8px 10px 0;
-  font-size: 10px;
-  color: var(--ink-faint);
-}
-.eyebrow {
-  display: block;
-  margin-bottom: 14px;
-  font: 10px var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--sage);
-}
+
 .room-invitation {
   display: flex;
   align-items: center;
@@ -1170,12 +1135,7 @@ textarea::placeholder {
   display: block;
   font-weight: 550;
 }
-.room-invitation small {
-  display: block;
-  color: var(--ink-dim);
-  margin-top: 3px;
-  font-size: 12px;
-}
+
 .invitation-arrow {
   margin-left: auto;
   color: var(--sage);
@@ -1291,8 +1251,18 @@ input[type="checkbox"] {
   display: block;
   margin: 0 auto;
 }
-@media (max-width: 850px) {
-  .brand-caption {
+
+/* Visual feedback belongs to successful actions, not navigation. */
+.leaf-flourish {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+@media (prefers-reduced-motion: reduce) {
+  .leaf-flourish {
     display: none;
   }
 }

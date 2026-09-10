@@ -22,10 +22,7 @@ export default function PresenceRail({ council, view, onNavigate }: Props) {
         onClick={() => onNavigate("home")}
         title="home"
       >
-        <img src="/chordial-icon.png" alt="" />{" "}
-        <span>
-          chordial<span className="brand-caption">a little room to grow</span>
-        </span>
+        <img src="/chordial-icon.png" alt="" /> <span>chordial</span>
       </button>
 
       <div className="rail-nav">
@@ -52,7 +49,6 @@ export default function PresenceRail({ council, view, onNavigate }: Props) {
       </div>
 
       <div className="rail-council">
-        <span className="rail-label">the council</span>
         <ul>
           {visible.map((m) => {
             const met = m.status === "active" || m.status === "introducing";
@@ -60,7 +56,7 @@ export default function PresenceRail({ council, view, onNavigate }: Props) {
               <li
                 key={m.id}
                 className={met ? "member" : "member unmet"}
-                title={met ? m.specialty : "hasn’t dropped by yet"}
+                title={met ? m.specialty : "not yet introduced"}
               >
                 <span
                   className="member-avatar"
@@ -81,21 +77,21 @@ export default function PresenceRail({ council, view, onNavigate }: Props) {
         </ul>
       </div>
       <div className="rail-footer">
-        <span className="rail-label">beside you</span>
         <button
           className="companion-launch"
           onClick={() => {
             setError(null);
             void showCompanion().catch((err) =>
               setError(
-                err instanceof Error ? err.message : "Couldn’t open the companion. Try Show companion in the tray menu.",
+                err instanceof Error
+                  ? err.message
+                  : "Couldn’t open the companion. Try Show companion in the tray menu.",
               ),
             );
           }}
         >
           <span aria-hidden="true">↗</span> open companion
         </button>
-        <p className="rail-hint">your tasks & a little company</p>
         {error && (
           <p className="link-error" role="alert">
             {error}

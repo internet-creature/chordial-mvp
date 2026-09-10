@@ -72,7 +72,7 @@ the button opens/reuses a named companion popup.
 
 ## Validation and limits
 
-Passed: production frontend build, 93 frontend unit tests, 8 browser tests,
+Passed: production frontend build, 93 frontend unit tests, 11 browser tests,
 and 18 native Rust tests.
 
 `npm run build` checks TypeScript and builds both window entries. `npm test`
@@ -105,3 +105,18 @@ server mutation receipt/event would ultimately give the UI a stronger signal
 than refreshing after every completed council turn. A backlog browsing surface
 would also make it easier to find tasks after deprioritizing them; today's API
 intentionally excludes them.
+
+## Minimal interface copy and action feedback
+
+Decorative headings and taglines are removed, including the clearing, brand
+subtitle, council heading, and sidebar helper text. Empty states, linking,
+archive, and timer controls use concise functional copy. Conversation content
+from the server is rendered as received.
+
+Successful task creation, focus starts, task completion, and setting a task aside
+produce a 1.6-second fan of leaf shapes in sage and blush. Focus starts from the
+cycle panel use the same effect. The canvas is decorative and ignores pointer
+events; reduced motion suppresses it. It resizes with the native companion form
+without restarting on ordinary re-renders, and unsuccessful actions do not
+trigger it. The browser suite checks visible leaf pixels, resize behavior,
+cleanup, failures, and reduced motion.

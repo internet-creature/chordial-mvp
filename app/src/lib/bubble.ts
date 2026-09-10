@@ -15,10 +15,10 @@ export interface DayShape {
 
 /** the fallback strings, one place for the voice pass */
 export const BUBBLE_COPY = {
-  hushed: "hushed — meeting nearby",
-  drifting: "quiet at the desk — that’s allowed",
-  overtime: "past the target — every extra minute counts",
-  empty: "nothing on the list yet — jot one below",
+  hushed: "notifications paused",
+  drifting: "away from desk",
+  overtime: "past target",
+  empty: "no tasks scheduled",
 } as const;
 
 function plural(n: number, one: string, many: string): string {

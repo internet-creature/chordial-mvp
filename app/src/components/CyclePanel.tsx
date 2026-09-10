@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchCycle, isAuthError } from "../api/client";
 import { startFocus } from "../api/sidecar";
+import { useLeafFlourish } from "./LeafFlourish";
 import type { CommitmentRow, CyclePayload } from "../api/types";
 import {
   capacityFill,
@@ -20,6 +21,7 @@ interface Props {
  * through the sync contract), and the one-tap door - a next action starts
  * a block on the deer's clock. */
 export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
+  const { flourish, leaves } = useLeafFlourish();
   const [view, setView] = useState<CyclePayload | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<number | null>(null);
@@ -68,14 +70,15 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
         c.next_action ?? c.task_title ?? c.title,
         pomMinutes,
       );
-      setNote("clock started — the deer has it 🦌");
+      setNote("timer started");
+      flourish();
     } catch (e) {
       // the sidecar answering with a refusal ("that task's clock is
       // already running") is a different truth than the sidecar being
       // gone - a network failure is a TypeError, an answered error isn't
       setNote(
         e instanceof TypeError
-          ? "the deer isn’t home — is the sidecar running?"
+          ? "timer unavailable — open the companion and retry."
           : e instanceof Error && e.message
             ? e.message
             : "that didn’t take — try again?",
@@ -94,9 +97,10 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
 
   return (
     <section className="cycle-panel">
+      {leaves}
       <header className="cycle-head">
         <div>
-          <h3>the cycle</h3>
+          <h3>cycle</h3>
           {cycle.theme && <p className="cycle-theme">{cycle.theme}</p>}
         </div>
         {view.frozen && (

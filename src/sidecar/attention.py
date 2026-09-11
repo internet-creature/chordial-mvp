@@ -12,11 +12,14 @@ consumer: a durable away episode (the step waiting underneath), the
 departure, the ONE return event and the re-offer. `DriftWatch` stays a
 consumer of its own for running blocks.
 
-rules, in v0: fresh input (or the surface coming back into view) is a
-hard return; during an explicit away episode sustained idle establishes
-departure quickly; ordinary idle with no episode and no block manufactures
-nothing; stale samples move nothing. screen lock/wake and opt-in app
-categories plug into the same machine later.
+rules, in v0: RENEWED input (or the surface coming back into view) is a
+return - renewed means the collector's reported idle reset between two
+samples, held across a debounce; the computed idle climbing on its own
+after one sample is not input (sol, #93). during an explicit away episode
+sustained idle establishes departure quickly; ordinary idle with no
+episode and no block manufactures nothing; stale samples move nothing.
+screen lock/wake and opt-in app categories plug into the same machine
+later.
 """
 from __future__ import annotations
 
@@ -45,6 +48,9 @@ AWAY = "away"
 RETURNED = "returned"
 
 MOMENT_RETURN = "stuck_return"
+# how a waiting step resolves: the choice -> the closed_reason
+RESOLUTIONS = {"start": "started", "not_now": "declined", "back": "back"}
+DEFAULT_STEP_MINUTES = 2.0
 
 
 def _utc_now() -> datetime:
@@ -63,6 +69,7 @@ class AttentionState:
         self.phase = PRESENT
         self._input_since: Optional[datetime] = None
         self._surface_seen: Optional[datetime] = None
+        self._prev_sample: Optional[tuple[datetime, float]] = None
 
     def observe_surface(self, visible: bool) -> None:
         """the person looked at (or away from) a chordial surface. coming
@@ -80,13 +87,35 @@ class AttentionState:
         return (self._surface_seen is not None
                 and (now - self._surface_seen).total_seconds() <= SURFACE_RECENT_SECONDS)
 
+    def _renewed(self, sample: Optional[tuple[datetime, float]]) -> tuple[bool, bool]:
+        """(new_sample, renewed): did a NEW collector sample arrive, and
+        did it show new input since the previous one? the reported idle
+        resets on input; otherwise it grows by exactly the gap between
+        samples. one sample after a restart counts when it says the desk
+        is live. the same sample seen again on the next tick is neither."""
+        prev = self._prev_sample
+        if sample is None:
+            return False, False
+        at, idle = sample
+        if prev is not None and at <= prev[0]:
+            return False, False     # the same sample, seen again
+        if idle >= RETURN_IDLE_SECONDS:
+            return True, False
+        if prev is None:
+            return True, True
+        expected = prev[1] + (at - prev[0]).total_seconds()
+        return True, idle < expected - 0.5
+
     def assess(self, explicit_away: bool, run_active: bool) -> Optional[str]:
         now = self.clock()
         surface = self._surface_recent(now)
+        sample = self.activity.sample
         if not self.activity.fresh and not surface:
             # a dead collector says nothing about the person
             return None
         idle = 0.0 if surface else self.activity.idle_seconds
+        new_sample, renewed = self._renewed(sample)
+        self._prev_sample = sample
 
         if self.phase in (PRESENT, POSSIBLY_AWAY):
             self._input_since = None
@@ -101,21 +130,29 @@ class AttentionState:
             self.phase = POSSIBLY_AWAY if idle >= AWAY_IDLE_SECONDS / 2 else PRESENT
             return None
 
-        # AWAY: only sustained input (or the surface) brings them back
-        if idle < RETURN_IDLE_SECONDS:
-            if surface:
-                self.phase = PRESENT
-                self._input_since = None
-                return RETURNED
-            if self._input_since is None:
-                self._input_since = now
-                return None
-            if (now - self._input_since).total_seconds() >= RETURN_DEBOUNCE_SECONDS:
-                self.phase = PRESENT
-                self._input_since = None
-                return RETURNED
+        # AWAY: only RENEWED input (or the surface) brings them back, and
+        # renewals must span the debounce - one twitch opens a window that
+        # only a second renewal can close
+        if surface:
+            self.phase = PRESENT
+            self._input_since = None
+            return RETURNED
+        if idle >= RETURN_IDLE_SECONDS:
+            self._input_since = None    # the twitch ended; still away
             return None
-        self._input_since = None        # the twitch ended; still away
+        if not renewed:
+            if new_sample:
+                # a fresh sample with no input behind it: whatever window
+                # a twitch opened is closed - typing renews every sample
+                self._input_since = None
+            return None
+        if self._input_since is None:
+            self._input_since = sample[0]
+            return None
+        if (sample[0] - self._input_since).total_seconds() >= RETURN_DEBOUNCE_SECONDS:
+            self.phase = PRESENT
+            self._input_since = None
+            return RETURNED
         return None
 
 
@@ -135,7 +172,8 @@ class AwayEpisodeWatch:
     # --- opening and closing ----------------------------------------------------
 
     def open(self, execution: dict, *, task_id: Optional[int], label: Optional[str],
-             next_action: Optional[str], minutes: Optional[float]) -> tuple[dict, bool]:
+             next_action: Optional[str], minutes: Optional[float],
+             step_minutes: Optional[float] = None) -> tuple[dict, bool]:
         """(episode, created). dedupes on execution_id: the same accepted
         proposal opens one episode. any other open episode is superseded."""
         now = self.clock()
@@ -153,6 +191,7 @@ class AwayEpisodeWatch:
                 episode_id=execution["episode_id"],
                 task_id=task_id, label=label, next_action=next_action,
                 minutes=float(minutes) if minutes else None,
+                step_minutes=float(step_minutes) if step_minutes else None,
                 opened_at=now.isoformat())
             self.store.enqueue("attention.away", {
                 "episode_id": execution["episode_id"],
@@ -164,13 +203,14 @@ class AwayEpisodeWatch:
 
     def resolve(self, choice: str) -> Optional[dict]:
         """the person answered the re-offer (or the card): "start" closes
-        as started (the caller starts the run), "not_now" as declined."""
+        as started (the caller starts the run, in the same transaction),
+        "not_now" as declined, "back" as back with nothing to start."""
         current = self.store.open_away()
         if current is None:
             return None
-        reason = {"start": "started", "not_now": "declined"}.get(choice)
+        reason = RESOLUTIONS.get(choice)
         if reason is None:
-            raise ValueError("choice must be start or not_now")
+            raise ValueError("choice must be one of " + ", ".join(RESOLUTIONS))
         self.store.close_away(current["id"], self.clock().isoformat(), reason)
         self.attention.phase = PRESENT
         return current
@@ -234,6 +274,10 @@ class AwayEpisodeWatch:
             "label": row["label"],
             "next_action": row["next_action"],
             "minutes": row["minutes"],
+            # the step underneath, if one was prepared - its own target,
+            # never the away duration (sol, #93)
+            "step_minutes": row.get("step_minutes"),
+            "has_step": bool(row["next_action"] and row["task_id"] is not None),
             "opened_at": row["opened_at"],
             "departed_at": row["departed_at"],
             "returned_at": row["returned_at"],

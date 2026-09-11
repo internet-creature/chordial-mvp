@@ -36,7 +36,8 @@ from aiohttp import web
 
 from src.sidecar.drift import ActivityState, DriftWatch
 from src.sidecar.attention import (AttentionState, AwayEpisodeWatch,
-                                   MOMENT_RETURN)
+                                   DEFAULT_STEP_MINUTES, MOMENT_RETURN,
+                                   RESOLUTIONS)
 from src.sidecar.focus import AlreadyStarted, FocusEngine, FocusError
 from src.sidecar.gates import SpeechGates
 from src.sidecar.lines import pick_line
@@ -305,6 +306,7 @@ class SidecarService:
             "activity": {**self.activity.snapshot(),
                          "drifting": self.drift.drifting},
             "offer": self.offers.payload(),
+            "away": self.away.payload(),
             "line": self._last_line,
             "linked": bool(self.store.get("device_token")),
             "sync_error": self.store.get("sync_error") or None,
@@ -407,7 +409,10 @@ class SidecarService:
         """a body proposal that leaves the desk (section 4): any running
         clock pauses (banks), and a durable away episode opens with the
         prepared step waiting underneath. body {execution, task_id?,
-        label?, next_action?, minutes?}; idempotent on execution_id."""
+        label?, next_action?, minutes?, step_minutes?}. idempotent on
+        execution_id - and the dedupe comes BEFORE the pause, so a stale
+        retry never touches the clock (sol, #93); pause + open commit as
+        one."""
         body = await _json_body(request) or {}
         if not isinstance(body, dict):
             return _error("json object required")
@@ -416,56 +421,88 @@ class SidecarService:
                 isinstance(execution.get(k), str) and execution.get(k).strip()
                 for k in ("execution_id", "episode_id")):
             return _error("execution {execution_id, episode_id} required")
+        execution = {"execution_id": execution["execution_id"].strip(),
+                     "episode_id": execution["episode_id"].strip()}
         task_id = body.get("task_id")
         if task_id is not None and (not isinstance(task_id, int)
                                     or isinstance(task_id, bool) or task_id < 1):
             return _error("task_id must be a positive integer")
-        minutes = body.get("minutes")
-        if minutes is not None and (not isinstance(minutes, (int, float))
-                                    or isinstance(minutes, bool) or minutes <= 0):
-            return _error("minutes must be a positive number")
+        minutes = _positive(body.get("minutes"))
+        step_minutes = _positive(body.get("step_minutes"))
+        if minutes is False or step_minutes is False:
+            return _error("minutes and step_minutes must be positive numbers")
         label = body.get("label") if isinstance(body.get("label"), str) else None
         step = body.get("next_action") if isinstance(body.get("next_action"), str) else None
-        paused = None
-        if self.engine.state().get("running"):
-            paused = self.engine.pause()
-        try:
-            away, created = self.away.open(
-                {"execution_id": execution["execution_id"].strip(),
-                 "episode_id": execution["episode_id"].strip()},
-                task_id=task_id, label=label, next_action=step, minutes=minutes)
-        except ValueError as e:
-            return _error(str(e), status=409)
-        line = await self._announce("stuck_away") if created else ""
-        if not created:
+
+        prior = self.store.away_by_execution(execution["execution_id"])
+        if prior is not None:
+            if prior["closed_at"] is not None:
+                return _error("that step's away time already happened", status=409)
             await self._broadcast(self._world())
+            return web.json_response({"focus": self.engine.state(),
+                                      "away": self.away.payload(),
+                                      "paused": None, "line": "",
+                                      "replayed": True})
+        paused = None
+        with self.store.transaction():
+            if self.engine.state().get("running"):
+                paused = self.engine.pause()
+            away, _created = self.away.open(
+                execution, task_id=task_id, label=label, next_action=step,
+                minutes=minutes, step_minutes=step_minutes)
+        line = await self._announce("stuck_away")
         return web.json_response({"focus": self.engine.state(), "away": away,
                                   "paused": paused, "line": line,
-                                  "replayed": not created})
+                                  "replayed": False})
 
     async def _away_step(self, request: web.Request) -> web.Response:
-        """the re-offer answered (section 4): "start" runs the waiting
-        step (its execution derived from the away one, still idempotent),
-        "not_now" lets it go. body {choice}."""
+        """the waiting step answered (section 4): body {choice, execution_id}.
+        "start" runs the step (its execution derived from the away one,
+        still idempotent) and closes the episode IN THE SAME TRANSACTION -
+        a failed start leaves the step waiting, a lost success replays;
+        "not_now" lets it go; "back" is the return of an away that had no
+        step underneath. the expected execution id guards against a stale
+        card (sol, #93)."""
         body = await _json_body(request) or {}
         choice = body.get("choice") if isinstance(body, dict) else None
+        execution_id = body.get("execution_id") if isinstance(body, dict) else None
+        if choice not in RESOLUTIONS:
+            return _error("choice must be one of " + ", ".join(RESOLUTIONS))
+        if not isinstance(execution_id, str) or not execution_id.strip():
+            return _error("execution_id required")
+        execution_id = execution_id.strip()
         current = self.away.payload()
-        if current is None:
-            return _error("no step is waiting", status=409)
-        try:
-            self.away.resolve(choice)
-        except ValueError as e:
-            return _error(str(e))
+        if current is None or current["execution_id"] != execution_id:
+            prior = self.store.away_by_execution(execution_id)
+            if prior is not None and prior["closed_at"] is not None:
+                # a lost response: answer what already happened
+                if prior["closed_reason"] == "started":
+                    run = self.store.run_by_execution(execution_id + ":step")
+                    if run and run["ended_at"] is None and run["frozen_at"] is None:
+                        return web.json_response({"focus": self.engine.state(),
+                                                  "away": None, "line": "",
+                                                  "replayed": True})
+                    return _error("that step already ran", status=409)
+                return web.json_response({"focus": self.engine.state(),
+                                          "away": self.away.payload(),
+                                          "line": "", "replayed": True})
+            return _error("that step is no longer waiting", status=409)
         if choice != "start":
+            self.away.resolve(choice)
             await self._broadcast(self._world())
-            return web.json_response({"focus": self.engine.state(), "away": None,
-                                      "line": ""})
+            return web.json_response({"focus": self.engine.state(),
+                                      "away": None, "line": "", "replayed": False})
+        if not current["has_step"]:
+            return _error("nothing is waiting to start - say back instead",
+                          status=409)
         try:
-            state = self.engine.start(
-                current["task_id"], current["label"],
-                current["minutes"] or 2,
-                execution={"execution_id": current["execution_id"] + ":step",
-                           "episode_id": current["episode_id"]})
+            with self.store.transaction():
+                state = self.engine.start(
+                    current["task_id"], current["label"],
+                    current["step_minutes"] or DEFAULT_STEP_MINUTES,
+                    execution={"execution_id": execution_id + ":step",
+                               "episode_id": current["episode_id"]})
+                self.away.resolve("start")
         except AlreadyStarted as e:
             return web.json_response({"focus": e.state, "away": None, "line": "",
                                       "replayed": True})
@@ -473,7 +510,8 @@ class SidecarService:
             return _error(str(e), status=409)
         self.ledger.clear()
         line = await self._announce("focus_start")
-        return web.json_response({"focus": state, "away": None, "line": line})
+        return web.json_response({"focus": state, "away": None, "line": line,
+                                  "replayed": False})
 
     async def _attention(self, request: web.Request) -> web.Response:
         """a chordial surface came into (or left) view - presence as good
@@ -676,6 +714,15 @@ class SidecarService:
         finally:
             self._sockets.discard(ws)
         return ws
+
+
+def _positive(value):
+    """a positive number, None when absent, False when malformed."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return False
+    return float(value)
 
 
 def _away_posture(away: Optional[dict]) -> tuple:

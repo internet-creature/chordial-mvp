@@ -24,7 +24,7 @@ import {
   resolveAway,
 } from "../api/sidecar";
 import type { DoneTaskRow, TaskRow } from "../api/types";
-import type { AwayState } from "../api/sidecar";
+import type { AwayChoice, AwayState } from "../api/sidecar";
 import { useToday } from "../lib/useToday";
 import TaskSyncStatus from "./TaskSyncStatus";
 import {
@@ -778,11 +778,11 @@ export default function DeerWindow() {
       Math.floor((Date.now() - awayBaseRef.current.at) / 1000)
     : 0;
 
-  async function onAwayStep(choice: "start" | "not_now") {
-    if (busy) return;
+  async function onAwayStep(choice: AwayChoice) {
+    if (busy || !away) return;
     setBusy(true);
     try {
-      const result = await resolveAway(choice);
+      const result = await resolveAway(choice, away.execution_id);
       setFocus(result.focus);
       setAway(result.away ?? null);
       if (result.line) say(result.line);
@@ -1441,20 +1441,32 @@ export default function DeerWindow() {
             <p className="deer-away-step">{STUCK_COPY.awayStep(away.label)}</p>
           )}
           <div className="deer-away-actions">
-            <button
-              className="deer-boundary-btn"
-              onClick={() => onAwayStep("start")}
-              disabled={busy}
-            >
-              {away.returned_at ? STUCK_COPY.startIt : STUCK_COPY.imBack}
-            </button>
-            <button
-              className="deer-boundary-btn"
-              onClick={() => onAwayStep("not_now")}
-              disabled={busy}
-            >
-              {STUCK_COPY.notNow}
-            </button>
+            {away.has_step ? (
+              <>
+                <button
+                  className="deer-boundary-btn"
+                  onClick={() => onAwayStep("start")}
+                  disabled={busy}
+                >
+                  {away.returned_at ? STUCK_COPY.startIt : STUCK_COPY.imBack}
+                </button>
+                <button
+                  className="deer-boundary-btn"
+                  onClick={() => onAwayStep("not_now")}
+                  disabled={busy}
+                >
+                  {STUCK_COPY.notNow}
+                </button>
+              </>
+            ) : (
+              <button
+                className="deer-boundary-btn"
+                onClick={() => onAwayStep("back")}
+                disabled={busy}
+              >
+                {STUCK_COPY.imBackNoStep}
+              </button>
+            )}
           </div>
         </div>
       )}

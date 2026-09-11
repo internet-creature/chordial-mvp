@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS away_episodes (
     label TEXT,
     next_action TEXT,
     minutes REAL,
+    step_minutes REAL,
     opened_at TEXT NOT NULL,
     departed_at TEXT,
     returned_at TEXT,
@@ -95,6 +96,7 @@ _COLUMN_MIGRATIONS = [
     # the boundary choice lives with the run, not in a window's memory:
     # a reload mid-overtime must not re-ask (sol, #92)
     ("runs", "boundary_choice", "TEXT"),
+    ("away_episodes", "step_minutes", "REAL"),
 ]
 
 
@@ -255,12 +257,13 @@ class SidecarStore:
     def insert_away(self, *, execution_id: str, episode_id: str,
                     task_id: Optional[int], label: Optional[str],
                     next_action: Optional[str], minutes: Optional[float],
-                    opened_at: str) -> int:
+                    opened_at: str, step_minutes: Optional[float] = None) -> int:
         cursor = self._conn.execute(
             "INSERT INTO away_episodes (execution_id, episode_id, task_id, label, "
-            "next_action, minutes, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "next_action, minutes, step_minutes, opened_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (execution_id, episode_id, task_id, label, next_action, minutes,
-             opened_at))
+             step_minutes, opened_at))
         self._commit()
         return int(cursor.lastrowid)
 

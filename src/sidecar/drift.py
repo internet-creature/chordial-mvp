@@ -52,6 +52,15 @@ class ActivityState:
         self._at = self.clock()
 
     @property
+    def sample(self) -> Optional[tuple[datetime, float]]:
+        """the latest collector sample as REPORTED (when, idle seconds) -
+        the attention seam reads renewals from consecutive samples, never
+        from the computed idle that keeps climbing on its own."""
+        if self._at is None:
+            return None
+        return (self._at, self._idle_seconds)
+
+    @property
     def fresh(self) -> bool:
         return (self._at is not None and
                 (self.clock() - self._at).total_seconds()

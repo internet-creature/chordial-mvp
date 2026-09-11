@@ -141,6 +141,43 @@ def test_a_mouse_twitch_is_debounced(store):
     assert result == att.MOMENT_RETURN
 
 
+def test_elapsed_time_after_one_sample_is_not_a_return(store):
+    """sol's #93 case: after one idle=0 sample the COMPUTED idle climbs
+    through 1, 2, 3 seconds on its own - that is not input."""
+    clock, activity, attention, watch = rig(store)
+    open_away(watch)
+    attention.hydrate_away()
+    store.update_away(store.open_away()["id"], departed_at=clock().isoformat())
+    clock.advance(minutes=3)
+    sample(activity, 0)                       # one twitch
+    for _ in range(6):
+        clock.advance(seconds=1)              # no new samples at all
+        assert watch.tick(run_active=False) is None
+    assert attention.phase == att.AWAY
+    assert events(store, "attention.returned") == []
+
+
+def test_samples_whose_idle_only_grows_are_not_renewals(store):
+    """the collector keeps reporting: 0, then 2, 4, 6 - the idle counter
+    never reset, so nobody typed; that twitch stays a twitch."""
+    clock, activity, attention, watch = rig(store)
+    open_away(watch)
+    attention.hydrate_away()
+    store.update_away(store.open_away()["id"], departed_at=clock().isoformat())
+    clock.advance(minutes=3)
+    for reported in (0, 2, 4, 6, 8):
+        sample(activity, reported)
+        assert watch.tick(run_active=False) is None
+        clock.advance(seconds=2)
+    assert attention.phase == att.AWAY
+    # then real typing: the counter resets on consecutive samples
+    for _ in range(3):
+        sample(activity, 0)
+        result = watch.tick(run_active=False)
+        clock.advance(seconds=2)
+    assert result == att.MOMENT_RETURN
+
+
 def test_the_surface_coming_into_view_is_a_hard_return(store):
     clock, activity, attention, watch = rig(store)
     open_away(watch)
@@ -211,7 +248,8 @@ def test_open_dedupes_supersedes_and_expires(store):
 
 def test_resolve_closes_with_its_reason(store):
     clock, activity, attention, watch = rig(store)
-    open_away(watch)
+    away, _ = open_away(watch, step_minutes=2)
+    assert away["has_step"] is True and away["step_minutes"] == 2.0
     with pytest.raises(ValueError, match="choice must be"):
         watch.resolve("maybe")
     assert watch.resolve("not_now")["execution_id"] == "exec-away"
@@ -252,7 +290,7 @@ def test_away_routes_pause_the_clock_and_start_the_waiting_step(store):
         clock.advance(minutes=5)
         body = {"execution": HANDOFF, "task_id": 7,
                 "label": "stuck-mode design: one sentence",
-                "next_action": "one sentence", "minutes": 8}
+                "next_action": "one sentence", "minutes": 8, "step_minutes": 2}
         resp = await client.post("/v1/away/start", json=body)
         assert resp.status == 200, await resp.text()
         data = await resp.json()
@@ -288,14 +326,27 @@ def test_away_routes_pause_the_clock_and_start_the_waiting_step(store):
         assert moments[-1] == "stuck_return"
         assert pushes[-1]["type"] == "state" and pushes[-1]["away"]["returned_at"]
         # the re-offer answered: the waiting step starts, dedupe id derived
-        resp = await client.post("/v1/away/step", json={"choice": "start"})
+        step = {"choice": "start", "execution_id": "exec-away"}
+        resp = await client.post("/v1/away/step", json=step)
         data = await resp.json()
-        assert data["away"] is None
+        assert data["away"] is None and data["replayed"] is False
         assert data["focus"]["running"] is True
         assert data["focus"]["execution_id"] == "exec-away:step"
         assert data["focus"]["label"] == "stuck-mode design: one sentence"
-        assert data["focus"]["target_minutes"] == 8
-        assert (await client.post("/v1/away/step", json={"choice": "start"})).status == 409
+        assert data["focus"]["target_minutes"] == 2      # the STEP's target, not the away's
+        # a lost response: the same request replays the live run
+        resp = await client.post("/v1/away/step", json=step)
+        data = await resp.json()
+        assert resp.status == 200 and data["replayed"] is True
+        assert data["focus"]["execution_id"] == "exec-away:step"
+        # a stale retry of away/start must not pause the step's run
+        resp = await client.post("/v1/away/start", json=body)
+        assert resp.status == 409
+        assert (await (await client.get("/v1/state")).json())["focus"]["running"] is True
+        # once the step ended, the same request is spent
+        await client.post("/v1/focus/pause")
+        resp = await client.post("/v1/away/step", json=step)
+        assert resp.status == 409
         await ws.close()
     _client_flow(store, clock, flow)
 
@@ -310,13 +361,59 @@ def test_away_start_validates_and_not_now_lets_it_go(store):
         assert resp.status == 400
         resp = await client.post("/v1/away/start", json={"execution": HANDOFF})
         assert resp.status == 200
-        resp = await client.post("/v1/away/step", json={"choice": "nope"})
+        resp = await client.post("/v1/away/step", json={"choice": "nope", "execution_id": "exec-away"})
         assert resp.status == 400
         resp = await client.post("/v1/away/step", json={"choice": "not_now"})
+        assert resp.status == 400                      # the expected execution is required
+        resp = await client.post("/v1/away/step", json={"choice": "not_now", "execution_id": "other"})
+        assert resp.status == 409                      # a stale card
+        # an away with nothing underneath: start is refused, back closes it
+        resp = await client.post("/v1/away/step", json={"choice": "start", "execution_id": "exec-away"})
+        assert resp.status == 409 and "say back" in (await resp.json())["error"]
+        assert (await (await client.get("/v1/state")).json())["away"]["has_step"] is False
+        resp = await client.post("/v1/away/step", json={"choice": "back", "execution_id": "exec-away"})
         assert (await resp.json())["away"] is None
-        assert store.away_by_execution("exec-away")["closed_reason"] == "declined"
+        assert store.away_by_execution("exec-away")["closed_reason"] == "back"
+        # the lost-response replay of a non-start resolution
+        resp = await client.post("/v1/away/step", json={"choice": "back", "execution_id": "exec-away"})
+        assert resp.status == 200 and (await resp.json())["replayed"] is True
         # a fresh run supersedes a waiting step
         await client.post("/v1/away/start", json={"execution": {"execution_id": "e2", "episode_id": "ep"}})
         await client.post("/v1/focus/start", json={"task_id": 3, "label": "x"})
         assert store.away_by_execution("e2")["closed_reason"] == "superseded"
+    _client_flow(store, clock, flow)
+
+
+
+def test_a_failed_step_start_leaves_the_step_waiting(store, monkeypatch):
+    """start and close commit together: a start that fails keeps the
+    episode open, nothing is lost."""
+    clock = Clock()
+
+    async def flow(client, service, activity):
+        await client.post("/v1/away/start", json={
+            "execution": HANDOFF, "task_id": 7, "label": "x", "next_action": "one",
+            "step_minutes": 2})
+        from src.sidecar.focus import FocusError
+        real = service.engine.start
+        monkeypatch.setattr(service.engine, "start",
+                            lambda *a, **k: (_ for _ in ()).throw(FocusError("boom")))
+        resp = await client.post("/v1/away/step", json={"choice": "start", "execution_id": "exec-away"})
+        assert resp.status == 409
+        assert store.away_by_execution("exec-away")["closed_at"] is None   # still waiting
+        monkeypatch.setattr(service.engine, "start", real)
+        resp = await client.post("/v1/away/step", json={"choice": "start", "execution_id": "exec-away"})
+        assert resp.status == 200 and (await resp.json())["focus"]["running"] is True
+        assert store.away_by_execution("exec-away")["closed_reason"] == "started"
+    _client_flow(store, clock, flow)
+
+
+def test_the_http_snapshot_carries_the_away(store):
+    clock = Clock()
+
+    async def flow(client, service, activity):
+        assert (await (await client.get("/v1/state")).json())["away"] is None
+        await client.post("/v1/away/start", json={"execution": HANDOFF})
+        snap = await (await client.get("/v1/state")).json()
+        assert snap["away"]["execution_id"] == "exec-away"
     _client_flow(store, clock, flow)

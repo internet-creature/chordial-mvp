@@ -104,6 +104,10 @@ export interface AwayState {
   label: string | null;
   next_action: string | null;
   minutes: number | null;
+  /** the step's own target, never the away duration; has_step says
+   * whether anything waits underneath at all */
+  step_minutes: number | null;
+  has_step: boolean;
   opened_at: string;
   departed_at: string | null;
   returned_at: string | null;
@@ -216,6 +220,7 @@ export const startAway = (body: {
   label?: string | null;
   next_action?: string | null;
   minutes?: number | null;
+  step_minutes?: number | null;
 }) =>
   request<{
     focus: FocusState;
@@ -224,12 +229,20 @@ export const startAway = (body: {
     replayed?: boolean;
   }>("/v1/away/start", { method: "POST", body: JSON.stringify(body) });
 
-/** the re-offer answered: start the waiting step, or let it go */
-export const resolveAway = (choice: "start" | "not_now") =>
-  request<{ focus: FocusState; away: AwayState | null; line: string }>(
-    "/v1/away/step",
-    { method: "POST", body: JSON.stringify({ choice }) },
-  );
+export type AwayChoice = "start" | "not_now" | "back";
+
+/** the waiting step answered, against the execution the card showed: start
+ * it, let it go, or just "back" when nothing waited underneath */
+export const resolveAway = (choice: AwayChoice, executionId: string) =>
+  request<{
+    focus: FocusState;
+    away: AwayState | null;
+    line: string;
+    replayed?: boolean;
+  }>("/v1/away/step", {
+    method: "POST",
+    body: JSON.stringify({ choice, execution_id: executionId }),
+  });
 
 /** a chordial surface came into (or left) view: presence as good as a
  * keystroke for the attention seam */

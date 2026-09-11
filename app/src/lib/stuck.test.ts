@@ -197,13 +197,13 @@ describe("the handoff after do this", () => {
       .toEqual({
         kind: "away", execution, taskId: 7,
         label: "stuck-mode design: write one sentence",
-        nextAction: "write one sentence", minutes: 8,
+        nextAction: "write one sentence", minutes: 8, stepMinutes: 2,
       });
-    // no step prepared: still an away, nothing waiting
+    // no step prepared: still an away, nothing waiting - and no target
     expect(handoffFor(exec({ action: "pause_and_away", kind: "body", minutes: null,
                              task_id: null, next_action: null }), titles))
       .toMatchObject({ kind: "away", taskId: null, label: null, nextAction: null,
-                       minutes: 8 });
+                       minutes: 8, stepMinutes: null });
   });
 
   it("in the chair or a sound shows its line and re-offers the step at once", () => {

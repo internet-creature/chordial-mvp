@@ -52,6 +52,7 @@ export const STUCK_COPY = {
   awayStep: (step: string) => `waiting: ${step}`,
   backLine: "back? the step is still ready.",
   imBack: "i’m back — start it ▸",
+  imBackNoStep: "i’m back",
   notNow: "not now",
   startFailed: "the companion didn’t answer — the step is still yours to start",
   startSpent: "that step already ran.",
@@ -276,7 +277,10 @@ export type Handoff =
       taskId: number | null;
       label: string | null;
       nextAction: string | null;
+      /** the away duration */
       minutes: number;
+      /** the waiting step's own target; null when nothing waits */
+      stepMinutes: number | null;
     }
   | {
       /** in the chair, or a sound to put on: the line, and the step
@@ -326,8 +330,9 @@ export function handoffFor(
       },
       taskId: execution.task_id,
       label: step?.label ?? null,
-      nextAction: execution.next_action?.trim() || null,
+      nextAction: step ? execution.next_action?.trim() || null : null,
       minutes: execution.minutes ?? 8,
+      stepMinutes: step ? step.minutes : null,
     };
   }
   return { kind: "line", line: execution.line, then: step };

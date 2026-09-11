@@ -208,6 +208,7 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
             label: plan.label,
             next_action: plan.nextAction,
             minutes: plan.minutes,
+            step_minutes: plan.stepMinutes,
           });
           await showCompanion().catch(() => undefined);
           setHandoffLine(STUCK_COPY.awayStarted);
@@ -259,7 +260,7 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
   // `react`) lands here with the execution still on the episode
   const startable =
     episode?.status === "accepted" && episode.execution
-      ? handoffFor(episode.execution, titles).kind === "start"
+      ? handoffFor(episode.execution, titles).kind !== "line"
       : false;
 
   const askAgain = () => {

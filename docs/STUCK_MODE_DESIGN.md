@@ -539,7 +539,31 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    accept-time `next_action` write; idempotent execution handoff;
    step / switch / thread / company; `run_mode="stuck"`; the boundary exit with two
    equal buttons; `stuck_stopped` + resume-point write; globally attributable events.
-4. **attention + body** — durable `AttentionState` / `AwayEpisode`; existing-signal
+4. **attention + body** *(BUILT 2026-09-11, branch `dogfood/stuck-attention`:
+   `src/sidecar/attention.py` — `AttentionState` (present / possibly_away / away /
+   returned; signals: input idle + freshness, explicit away intent, the surface
+   coming into view via `POST /v1/attention {visible}`; departure = idle ≥ 90s
+   during an explicit episode, return = input under 10s HELD for 3s or the
+   surface seen; stale samples move nothing; no episode and no block manufacture
+   nothing; a running block's idleness stays drift's) and `AwayEpisodeWatch` (the
+   durable `away_episodes` table: one open at a time, deduped on the away
+   execution id, superseded by any new run or a newer episode, expired after 3h;
+   `attention.away` on open, `attention.returned` once per real return with the
+   count; the machine hydrates AWAY from a departed-and-not-returned row on
+   restart); routes `POST /v1/away/start` (pauses any running clock, opens the
+   episode; idempotent) and `POST /v1/away/step {start|not_now}` (start runs the
+   waiting step with execution id `<away id>:step`, still idempotent); the ticker
+   announces `stuck_return` (gated) and broadcasts the state on departure/return
+   so the re-offer shows hushed or not; pools `stuck_away` / `stuck_return`;
+   server allowlists the two event types and folds them into `outcome`
+   (`away_opened`, `returned_after_away`, `away_seconds`; a `:step` run folds to
+   its episode); the page hands `pause_and_away` to the sidecar as an away and
+   shows *then: start the step ▸* under an in-chair or sound line; the den shows
+   the away card (count-up, the waiting step, "i'm back — start it" / "not now",
+   and on a real return "back? the step is still ready."). NOT built: screen
+   lock/wake and opt-in app categories (the machine has the seam), and the
+   sound proposal opening anything (willowden's privilege ladder).)* — durable
+   `AttentionState` / `AwayEpisode`; existing-signal
    rules (idle, freshness, focus state, explicit intent, surface visibility); body
    actions and the one re-offer on a real return. Drift remains block-scoped but reads
    the same attention transitions. tests: a paused run can still produce an away →

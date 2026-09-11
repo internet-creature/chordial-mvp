@@ -90,6 +90,18 @@ LINE_POOLS: dict[str, list[str]] = {
         "ended on purpose. that counts for more than it looks.",
         "*approving ear flick* a boundary, kept. the minutes are in the bank.",
     ],
+    # away and back (docs/STUCK_MODE_DESIGN.md section 4 + 4.1): the step
+    # waits, and the return re-offers it - never a scold for leaving
+    "stuck_away": [
+        "go. the step waits right here.",
+        "*settles in to wait* off you go. it'll be exactly where you left it.",
+        "a few minutes is a few minutes. the sentence isn't going anywhere.",
+    ],
+    "stuck_return": [
+        "back? the sentence is still ready.",
+        "*ears up* there you are. the step's still warm.",
+        "welcome back. one small thing is waiting, exactly as you left it.",
+    ],
     "task_finished": [
         "*FULL EMERGENCY UNLOAF* DONE!! you FINISHED it!! 🦌🎉 look at "
         "that - an actual completed thing, witnessed by an actual deer!!",

@@ -6,7 +6,7 @@ import type {
   StuckReaction,
 } from "../api/types";
 import { fetchStuck, isAuthError, openStuck, reactStuck } from "../api/client";
-import { startFocus } from "../api/sidecar";
+import { startAway, startFocus } from "../api/sidecar";
 import { showCompanion } from "../lib/tauriWindow";
 import { useToday } from "../lib/useToday";
 import {
@@ -26,6 +26,7 @@ import {
   titleMap,
   visibleProposal,
   whyHidden,
+  type StepStart,
   type StuckRequest,
 } from "../lib/stuck";
 
@@ -55,6 +56,7 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
   const [hideWhy, setHideWhy] = useState(() => whyHidden(window.localStorage));
   const [handoffLine, setHandoffLine] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [thenStep, setThenStep] = useState<StepStart | null>(null);
   const closedRef = useRef(false);
 
   const titles = titleMap(today?.buckets);
@@ -191,13 +193,26 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
   const handoff = useCallback(
     async (execution: StuckExecution) => {
       const plan = handoffFor(execution, titles);
-      if (plan.kind !== "start") {
+      if (plan.kind === "line") {
         setHandoffLine(plan.line);
+        setThenStep(plan.then);
         return;
       }
       setBusy(true);
       setHandoffError(null);
       try {
+        if (plan.kind === "away") {
+          await startAway({
+            execution: plan.execution,
+            task_id: plan.taskId,
+            label: plan.label,
+            next_action: plan.nextAction,
+            minutes: plan.minutes,
+          });
+          await showCompanion().catch(() => undefined);
+          setHandoffLine(STUCK_COPY.awayStarted);
+          return;
+        }
         await startFocus(plan.taskId, plan.label, plan.minutes, undefined, plan.execution);
         await showCompanion().catch(() => undefined);
         setHandoffLine(STUCK_COPY.startedLine);
@@ -212,6 +227,25 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
     },
     [titles],
   );
+
+  /** the step under a body or sound proposal, started from the page */
+  const startThen = async (step: StepStart) => {
+    setBusy(true);
+    setHandoffError(null);
+    try {
+      await startFocus(step.taskId, step.label, step.minutes, undefined, step.execution);
+      await showCompanion().catch(() => undefined);
+      setThenStep(null);
+      setHandoffLine(STUCK_COPY.startedLine);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "";
+      setHandoffError(
+        /already ran/.test(message) ? STUCK_COPY.startSpent : STUCK_COPY.startFailed,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const onDoThis = async () => {
     const card = visibleProposal(episode);
@@ -282,7 +316,20 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
         {handoffLine ? (
           <>
             <p className="stuck-rest-line">{handoffLine}</p>
-            <button className="stuck-do" onClick={() => leave("closed")}>
+            {handoffError && <p className="stuck-error">{handoffError}</p>}
+            {thenStep && (
+              <button
+                className="stuck-do"
+                onClick={() => startThen(thenStep)}
+                disabled={busy}
+              >
+                {STUCK_COPY.thenStep}
+              </button>
+            )}
+            <button
+              className={thenStep ? "stuck-alt" : "stuck-do"}
+              onClick={() => leave("closed")}
+            >
               {STUCK_COPY.close}
             </button>
           </>

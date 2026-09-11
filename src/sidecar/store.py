@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS runs (
     seconds INTEGER,
     end_reason TEXT
 );
+CREATE TABLE IF NOT EXISTS away_episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    execution_id TEXT NOT NULL UNIQUE,
+    episode_id TEXT NOT NULL,
+    task_id INTEGER,
+    label TEXT,
+    next_action TEXT,
+    minutes REAL,
+    opened_at TEXT NOT NULL,
+    departed_at TEXT,
+    returned_at TEXT,
+    closed_at TEXT,
+    closed_reason TEXT
+);
 CREATE TABLE IF NOT EXISTS offers (
     offer_uuid TEXT PRIMARY KEY,
     run_id INTEGER NOT NULL,
@@ -235,6 +249,53 @@ class SidecarStore:
              run_mode, episode_id, execution_id))
         self._commit()
         return int(cursor.lastrowid)
+
+    # --- away episodes (STUCK_MODE_DESIGN section 4.1) ------------------------
+
+    def insert_away(self, *, execution_id: str, episode_id: str,
+                    task_id: Optional[int], label: Optional[str],
+                    next_action: Optional[str], minutes: Optional[float],
+                    opened_at: str) -> int:
+        cursor = self._conn.execute(
+            "INSERT INTO away_episodes (execution_id, episode_id, task_id, label, "
+            "next_action, minutes, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (execution_id, episode_id, task_id, label, next_action, minutes,
+             opened_at))
+        self._commit()
+        return int(cursor.lastrowid)
+
+    def away(self, row_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM away_episodes WHERE id = ?", (row_id,)).fetchone()
+        return dict(row) if row else None
+
+    def open_away(self) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM away_episodes WHERE closed_at IS NULL "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def away_by_execution(self, execution_id: str) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM away_episodes WHERE execution_id = ?",
+            (execution_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_away(self, row_id: int, **cols) -> None:
+        allowed = {"departed_at", "returned_at"}
+        sets = {k: v for k, v in cols.items() if k in allowed}
+        if not sets:
+            return
+        self._conn.execute(
+            "UPDATE away_episodes SET " + ", ".join(f"{k} = ?" for k in sets)
+            + " WHERE id = ?", (*sets.values(), row_id))
+        self._commit()
+
+    def close_away(self, row_id: int, closed_at: str, reason: str) -> None:
+        self._conn.execute(
+            "UPDATE away_episodes SET closed_at = ?, closed_reason = ? "
+            "WHERE id = ? AND closed_at IS NULL", (closed_at, reason, row_id))
+        self._commit()
 
     def set_boundary_choice(self, run_id: int, choice: str) -> None:
         self._conn.execute("UPDATE runs SET boundary_choice = ? WHERE id = ?",

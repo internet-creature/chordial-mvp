@@ -20,8 +20,11 @@ import {
   type Resolution,
   type RewindOffer,
   keepGoingAtBoundary,
+  postAttention,
+  resolveAway,
 } from "../api/sidecar";
 import type { DoneTaskRow, TaskRow } from "../api/types";
+import type { AwayState } from "../api/sidecar";
 import { useToday } from "../lib/useToday";
 import TaskSyncStatus from "./TaskSyncStatus";
 import {
@@ -94,6 +97,7 @@ import InlineContent from "./InlineContent";
 import {
   boundaryShowing,
   makeRequest,
+  mmss as mmssOf,
   STUCK_COPY,
   writeStuckRequest,
 } from "../lib/stuck";
@@ -279,6 +283,7 @@ export default function DeerWindow() {
         )
           say(state.line);
         setOffer(state.offer ?? null);
+        setAway(state.away ?? null);
       })
       .catch(() => {});
     return () => {
@@ -293,6 +298,7 @@ export default function DeerWindow() {
           setFocus(payload.focus);
           if (payload.activity) setActivity(payload.activity);
           if ("offer" in payload) setOffer(payload.offer ?? null);
+          if ("away" in payload) setAway(payload.away ?? null);
         }
         if (payload.type === "line") say(payload.text);
         if (payload.type === "rewind_offer") {
@@ -729,6 +735,57 @@ export default function DeerWindow() {
       if (!result.focus.running && typeof taskId === "number") {
         window.setTimeout(() => say(STUCK_COPY.resumeLine), 4000);
       }
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // the away episode (docs/STUCK_MODE_DESIGN.md §4 + §4.1): the step
+  // waits while they're off the desk; a real return re-offers it. the
+  // window also tells the sidecar when it is looked at - presence as
+  // good as a keystroke.
+  const [away, setAway] = useState<AwayState | null>(null);
+  const [awayTick, setAwayTick] = useState(0);
+  useEffect(() => {
+    if (!away) return;
+    const id = window.setInterval(() => setAwayTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [away]);
+  useEffect(() => {
+    const report = () =>
+      void postAttention(document.visibilityState === "visible" && document.hasFocus());
+    document.addEventListener("visibilitychange", report);
+    window.addEventListener("focus", report);
+    window.addEventListener("blur", report);
+    return () => {
+      document.removeEventListener("visibilitychange", report);
+      window.removeEventListener("focus", report);
+      window.removeEventListener("blur", report);
+    };
+  }, []);
+  // the count-up: the sidecar's number when the state arrived, plus the
+  // seconds since (a state push resets the base)
+  const awayBaseRef = useRef<{ base: number; at: number } | null>(null);
+  if (away && (!awayBaseRef.current || awayBaseRef.current.base !== away.seconds_away)) {
+    awayBaseRef.current = { base: away.seconds_away, at: Date.now() };
+  }
+  if (!away) awayBaseRef.current = null;
+  void awayTick; // the interval re-renders; the number reads the clock
+  const awaySeconds = away && awayBaseRef.current
+    ? awayBaseRef.current.base +
+      Math.floor((Date.now() - awayBaseRef.current.at) / 1000)
+    : 0;
+
+  async function onAwayStep(choice: "start" | "not_now") {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await resolveAway(choice);
+      setFocus(result.focus);
+      setAway(result.away ?? null);
+      if (result.line) say(result.line);
     } catch (err) {
       showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
@@ -1370,6 +1427,35 @@ export default function DeerWindow() {
               show timer
             </button>
           )}
+        </div>
+      )}
+
+      {away && !focus.running && (
+        <div className="deer-away" role="status">
+          <p className="deer-away-line">
+            {away.returned_at
+              ? STUCK_COPY.backLine
+              : STUCK_COPY.awayLabel(mmssOf(awaySeconds))}
+          </p>
+          {away.label && (
+            <p className="deer-away-step">{STUCK_COPY.awayStep(away.label)}</p>
+          )}
+          <div className="deer-away-actions">
+            <button
+              className="deer-boundary-btn"
+              onClick={() => onAwayStep("start")}
+              disabled={busy}
+            >
+              {away.returned_at ? STUCK_COPY.startIt : STUCK_COPY.imBack}
+            </button>
+            <button
+              className="deer-boundary-btn"
+              onClick={() => onAwayStep("not_now")}
+              disabled={busy}
+            >
+              {STUCK_COPY.notNow}
+            </button>
+          </div>
         </div>
       )}
 

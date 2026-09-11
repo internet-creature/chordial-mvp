@@ -35,6 +35,8 @@ from typing import Optional, Set
 from aiohttp import web
 
 from src.sidecar.drift import ActivityState, DriftWatch
+from src.sidecar.attention import (AttentionState, AwayEpisodeWatch,
+                                   MOMENT_RETURN)
 from src.sidecar.focus import AlreadyStarted, FocusEngine, FocusError
 from src.sidecar.gates import SpeechGates
 from src.sidecar.lines import pick_line
@@ -74,6 +76,12 @@ class SidecarService:
         self.pump = pump or OutboxPump(store)
         self.activity = activity or ActivityState()
         self.drift = drift or DriftWatch(store, self.activity)
+        # the attention seam beneath drift (STUCK_MODE_DESIGN section 4.1):
+        # the away episode is durable; the machine hydrates from it
+        self.attention = AttentionState(self.activity, clock=self.engine.clock)
+        self.away = AwayEpisodeWatch(store, self.attention,
+                                     clock=self.engine.clock)
+        self._away_posture: tuple = (None, None, None)
         self.gates = gates or SpeechGates()
         self.ledger = ActivityLedger()
         self.offers = RewindOffers(store, self.ledger,
@@ -111,6 +119,9 @@ class SidecarService:
         app.router.add_post("/v1/focus/start", self._focus_start)
         app.router.add_post("/v1/focus/pause", self._focus_pause)
         app.router.add_post("/v1/focus/boundary", self._focus_boundary)
+        app.router.add_post("/v1/away/start", self._away_start)
+        app.router.add_post("/v1/away/step", self._away_step)
+        app.router.add_post("/v1/attention", self._attention)
         app.router.add_post("/v1/focus/finish", self._focus_finish)
         app.router.add_post("/v1/focus/rewind", self._rewind)
         app.router.add_post("/v1/focus/rewind/undo", self._rewind_undo)
@@ -181,12 +192,15 @@ class SidecarService:
         correction question, impact-framed fresh on every build. building
         it stamps the broadcast posture the ticker compares against."""
         self._posture = (self.activity.blocked, self.drift.drifting)
+        away = self.away.payload()
+        self._away_posture = _away_posture(away)
         return {
             "type": "state",
             "focus": self.engine.state(),
             "activity": {**self.activity.snapshot(),
                          "drifting": self._posture[1]},
             "offer": self.offers.payload(),
+            "away": away,
         }
 
     async def _announce(self, moment: str) -> str:
@@ -252,6 +266,14 @@ class SidecarService:
         elif moment:
             await self._announce_unprompted(moment)
         elif (self.activity.blocked, self.drift.drifting) != self._posture:
+            await self._broadcast(self._world())
+        # the away episode: departure and the one return (4.1). the line
+        # rides the gates; the state carries the return either way, so the
+        # re-offer shows even when the deer is hushed
+        away_moment = self.away.tick(active is not None)
+        if away_moment == MOMENT_RETURN:
+            await self._announce_unprompted(away_moment)
+        elif _away_posture(self.away.payload()) != self._away_posture:
             await self._broadcast(self._world())
 
     # --- handlers ------------------------------------------------------------
@@ -374,11 +396,94 @@ class SidecarService:
         except FocusError as e:
             return _error(str(e), status=409 if "already ran" in str(e) else 400)
         self.ledger.clear()          # a new run starts a new story
+        self.away.supersede()        # a waiting step is no longer next
         line = await self._announce(
             "focus_switch" if switching else "focus_start")
         return web.json_response({"focus": state, "line": line,
                                   "offer": self.offers.payload(),
                                   "replayed": False})
+
+    async def _away_start(self, request: web.Request) -> web.Response:
+        """a body proposal that leaves the desk (section 4): any running
+        clock pauses (banks), and a durable away episode opens with the
+        prepared step waiting underneath. body {execution, task_id?,
+        label?, next_action?, minutes?}; idempotent on execution_id."""
+        body = await _json_body(request) or {}
+        if not isinstance(body, dict):
+            return _error("json object required")
+        execution = body.get("execution")
+        if not isinstance(execution, dict) or not all(
+                isinstance(execution.get(k), str) and execution.get(k).strip()
+                for k in ("execution_id", "episode_id")):
+            return _error("execution {execution_id, episode_id} required")
+        task_id = body.get("task_id")
+        if task_id is not None and (not isinstance(task_id, int)
+                                    or isinstance(task_id, bool) or task_id < 1):
+            return _error("task_id must be a positive integer")
+        minutes = body.get("minutes")
+        if minutes is not None and (not isinstance(minutes, (int, float))
+                                    or isinstance(minutes, bool) or minutes <= 0):
+            return _error("minutes must be a positive number")
+        label = body.get("label") if isinstance(body.get("label"), str) else None
+        step = body.get("next_action") if isinstance(body.get("next_action"), str) else None
+        paused = None
+        if self.engine.state().get("running"):
+            paused = self.engine.pause()
+        try:
+            away, created = self.away.open(
+                {"execution_id": execution["execution_id"].strip(),
+                 "episode_id": execution["episode_id"].strip()},
+                task_id=task_id, label=label, next_action=step, minutes=minutes)
+        except ValueError as e:
+            return _error(str(e), status=409)
+        line = await self._announce("stuck_away") if created else ""
+        if not created:
+            await self._broadcast(self._world())
+        return web.json_response({"focus": self.engine.state(), "away": away,
+                                  "paused": paused, "line": line,
+                                  "replayed": not created})
+
+    async def _away_step(self, request: web.Request) -> web.Response:
+        """the re-offer answered (section 4): "start" runs the waiting
+        step (its execution derived from the away one, still idempotent),
+        "not_now" lets it go. body {choice}."""
+        body = await _json_body(request) or {}
+        choice = body.get("choice") if isinstance(body, dict) else None
+        current = self.away.payload()
+        if current is None:
+            return _error("no step is waiting", status=409)
+        try:
+            self.away.resolve(choice)
+        except ValueError as e:
+            return _error(str(e))
+        if choice != "start":
+            await self._broadcast(self._world())
+            return web.json_response({"focus": self.engine.state(), "away": None,
+                                      "line": ""})
+        try:
+            state = self.engine.start(
+                current["task_id"], current["label"],
+                current["minutes"] or 2,
+                execution={"execution_id": current["execution_id"] + ":step",
+                           "episode_id": current["episode_id"]})
+        except AlreadyStarted as e:
+            return web.json_response({"focus": e.state, "away": None, "line": "",
+                                      "replayed": True})
+        except FocusError as e:
+            return _error(str(e), status=409)
+        self.ledger.clear()
+        line = await self._announce("focus_start")
+        return web.json_response({"focus": state, "away": None, "line": line})
+
+    async def _attention(self, request: web.Request) -> web.Response:
+        """a chordial surface came into (or left) view - presence as good
+        as a keystroke (4.1 signal 6). body {visible}."""
+        body = await _json_body(request) or {}
+        visible = body.get("visible") if isinstance(body, dict) else None
+        if not isinstance(visible, bool):
+            return _error("visible (boolean) required")
+        self.attention.observe_surface(visible)
+        return web.json_response({"ok": True})
 
     async def _focus_boundary(self, request: web.Request) -> web.Response:
         """the boundary's "keep going", persisted with the run (section
@@ -571,6 +676,14 @@ class SidecarService:
         finally:
             self._sockets.discard(ws)
         return ws
+
+
+def _away_posture(away: Optional[dict]) -> tuple:
+    """what the ticker compares to know the away state moved: open,
+    departed, returned - never the count-up itself."""
+    if not away:
+        return (None, None, None)
+    return (away["execution_id"], away["departed_at"], away["returned_at"])
 
 
 def _error(message: str, status: int = 400) -> web.Response:

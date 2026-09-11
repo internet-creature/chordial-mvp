@@ -46,6 +46,13 @@ export const STUCK_COPY = {
   boundaryTitle: "the container’s full — both are real endings",
   resumeLine: "the first piece exists now. next time doesn’t start from blank.",
   startIt: "start it ▸",
+  awayStarted: "go. the step waits in the companion.",
+  thenStep: "then: start the step ▸",
+  awayLabel: (mmss: string) => `away ${mmss} · the step waits`,
+  awayStep: (step: string) => `waiting: ${step}`,
+  backLine: "back? the step is still ready.",
+  imBack: "i’m back — start it ▸",
+  notNow: "not now",
   startFailed: "the companion didn’t answer — the step is still yours to start",
   startSpent: "that step already ran.",
   chosenLine: "you already chose. the companion has it.",
@@ -253,15 +260,31 @@ export interface HandoffExecution {
   episode_id: string;
 }
 
+export interface StepStart {
+  taskId: number | null;
+  label: string;
+  minutes: number;
+  execution: HandoffExecution;
+}
+
 export type Handoff =
+  | ({ kind: "start" } & StepStart)
   | {
-      kind: "start";
-      taskId: number | null;
-      label: string;
-      minutes: number;
+      /** leaving the desk (§4 body): the clock pauses, the step waits */
+      kind: "away";
       execution: HandoffExecution;
+      taskId: number | null;
+      label: string | null;
+      nextAction: string | null;
+      minutes: number;
     }
-  | { kind: "line"; line: string };
+  | {
+      /** in the chair, or a sound to put on: the line, and the step
+       * re-offered right away when one was prepared */
+      kind: "line";
+      line: string;
+      then: StepStart | null;
+    };
 
 export function handoffFor(
   execution: StuckExecution,
@@ -293,7 +316,47 @@ export function handoffFor(
       },
     };
   }
-  return { kind: "line", line: execution.line };
+  const step = preparedStep(execution, titles);
+  if (execution.action === "pause_and_away") {
+    return {
+      kind: "away",
+      execution: {
+        execution_id: execution.execution_id,
+        episode_id: execution.episode_id,
+      },
+      taskId: execution.task_id,
+      label: step?.label ?? null,
+      nextAction: execution.next_action?.trim() || null,
+      minutes: execution.minutes ?? 8,
+    };
+  }
+  return { kind: "line", line: execution.line, then: step };
+}
+
+/** the step waiting underneath a body or sound proposal: its own start,
+ * with an execution derived from the proposal's (still idempotent) */
+function preparedStep(
+  execution: StuckExecution,
+  titles: ReadonlyMap<number, string>,
+): StepStart | null {
+  if (execution.task_id === null) return null;
+  const scope = execution.next_action?.trim() || null;
+  if (!scope) return null;
+  const title = titles.get(execution.task_id) ?? "a task";
+  return {
+    taskId: execution.task_id,
+    label: `${title}: ${scope}`,
+    minutes: 2,
+    execution: {
+      execution_id: `${execution.execution_id}:step`,
+      episode_id: execution.episode_id,
+    },
+  };
+}
+
+export function mmss(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 // --- the boundary (§4) -------------------------------------------------------------

@@ -1004,7 +1004,8 @@ class StuckStore:
 # execution ids; the fold matches them against the episode's own
 # execution_id and merges what happened into `outcome`. nobody is asked.
 
-FOLDED_TYPES = frozenset({"session.started", "session.ended"})
+FOLDED_TYPES = frozenset({"session.started", "session.ended",
+                          "attention.away", "attention.returned"})
 REASON_BOUNDARY = "boundary"
 # the v0 resume point (section 4): the step they did, marked as begun -
 # written here, from the durable session.ended, so a dead network or a
@@ -1038,11 +1039,21 @@ def fold_event(db, row) -> None:
     if ep is None:
         logger.warning("stuck fold: no episode %s for %s", episode_uuid, row.event_uuid)
         return
-    if ep.execution_id != execution_id:
+    if execution_id not in (ep.execution_id, f"{ep.execution_id}:step"):
+        # the waiting step's run derives its id from the away execution
         logger.warning("stuck fold: execution %s is not episode %s's (%s)",
                        execution_id, episode_uuid, ep.execution_id)
         return
     outcome = dict(ep.outcome or {})
+    if row.event_type == "attention.away":
+        outcome["away_opened"] = True
+        ep.outcome = outcome
+        return
+    if row.event_type == "attention.returned":
+        outcome["returned_after_away"] = True
+        outcome["away_seconds"] = int(payload.get("away_seconds") or 0)
+        ep.outcome = outcome
+        return
     if row.event_type == "session.started":
         ep.run_ref = {"device_id": row.device_id, "event_uuid": row.event_uuid}
         outcome["started"] = True

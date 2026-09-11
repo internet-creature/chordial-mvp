@@ -810,3 +810,27 @@ def test_resume_point_is_capped_like_any_scope():
     assert stuck.resume_point("") == "pick up where you stopped"
     long = stuck.resume_point("x" * 300)
     assert len(long) <= stuck.NEXT_ACTION_CAP and long.endswith("…")
+
+
+
+def test_the_away_episode_folds_its_opening_and_the_one_return(store, db, device):
+    done = _accepted_episode(store, db)
+    ids = {"episode_id": done["episode_id"],
+           "execution_id": done["execution"]["execution_id"]}
+    _land(device, "attention.away", {**ids, "task_id": 1, "minutes": 8}, NOW)
+    _land(device, "attention.returned", {**ids, "away_seconds": 512},
+          NOW + timedelta(minutes=9))
+    # the waiting step's run derives its id from the away execution
+    _land(device, "session.ended",
+          {"task_id": 1, "label": "x", "seconds": 130, "reason": "boundary",
+           "target_minutes": 2.0, "run_mode": "stuck",
+           "episode_id": done["episode_id"],
+           "execution_id": done["execution"]["execution_id"] + ":step"},
+          NOW + timedelta(minutes=12))
+    with db() as s:
+        row = s.query(StuckEpisode).filter(
+            StuckEpisode.episode_uuid == done["episode_id"]).one()
+        assert row.outcome["away_opened"] is True
+        assert row.outcome["returned_after_away"] is True
+        assert row.outcome["away_seconds"] == 512
+        assert row.outcome["stopped_at_boundary"] is True

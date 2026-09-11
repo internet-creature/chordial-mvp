@@ -6,6 +6,7 @@ import {
   enoughLine,
   handoffFor,
   makeRequest,
+  mmss,
   readStuckRequest,
   restEvidence,
   setWhyHidden,
@@ -190,12 +191,40 @@ describe("the handoff after do this", () => {
                  execution });
   });
 
-  it("everything else shows its line", () => {
-    for (const action of ["pause_and_away", "body_here", "rest_here",
-                          "point_to_sound"] as const) {
-      expect(handoffFor(exec({ action, line: "water, then outside." }), titles))
-        .toEqual({ kind: "line", line: "water, then outside." });
-    }
+  it("leaving the desk is an away with the step waiting underneath", () => {
+    expect(handoffFor(exec({ action: "pause_and_away", kind: "body", minutes: 8,
+                             line: "water, then outside." }), titles))
+      .toEqual({
+        kind: "away", execution, taskId: 7,
+        label: "stuck-mode design: write one sentence",
+        nextAction: "write one sentence", minutes: 8,
+      });
+    // no step prepared: still an away, nothing waiting
+    expect(handoffFor(exec({ action: "pause_and_away", kind: "body", minutes: null,
+                             task_id: null, next_action: null }), titles))
+      .toMatchObject({ kind: "away", taskId: null, label: null, nextAction: null,
+                       minutes: 8 });
+  });
+
+  it("in the chair or a sound shows its line and re-offers the step at once", () => {
+    const line = handoffFor(exec({ action: "body_here", kind: "body",
+                                   line: "stand up and stretch." }), titles);
+    expect(line).toEqual({
+      kind: "line", line: "stand up and stretch.",
+      then: { taskId: 7, label: "stuck-mode design: write one sentence", minutes: 2,
+              execution: { execution_id: "x:step", episode_id: "e1" } },
+    });
+    expect(handoffFor(exec({ action: "point_to_sound", kind: "sound", task_id: null,
+                             next_action: null, line: "rain." }), titles))
+      .toEqual({ kind: "line", line: "rain.", then: null });
+    expect(handoffFor(exec({ action: "rest_here", kind: "rest", line: "close the list." }),
+                      titles).kind).toBe("line");
+  });
+
+  it("formats the count-up", () => {
+    expect(mmss(0)).toBe("0:00");
+    expect(mmss(65)).toBe("1:05");
+    expect(mmss(600.9)).toBe("10:00");
   });
 
   it("builds the title map from every bucket", () => {

@@ -45,8 +45,9 @@ export const STUCK_COPY = {
   keepGoing: "keep going",
   boundaryTitle: "the container’s full — both are real endings",
   resumeLine: "the first piece exists now. next time doesn’t start from blank.",
-  resumeSaveFailed: "couldn’t save where you stopped — the step is still on the task",
-  resumePrefix: "pick up where you stopped: ",
+  startIt: "start it ▸",
+  startFailed: "the companion didn’t answer — the step is still yours to start",
+  startSpent: "that step already ran.",
   chosenLine: "you already chose. the companion has it.",
   enoughPrefix: "enough = ",
   container: (minutes: number) => `${minutes} min · then you choose`,
@@ -295,28 +296,18 @@ export function handoffFor(
   return { kind: "line", line: execution.line };
 }
 
-// --- the boundary (§4): stop here saves where they stopped ------------------------
-// v0's resume point is a template (the turn's rewrite is a later capability):
-// the step they did, marked as begun, capped like any scope.
-
-export const RESUME_CAP = 140;
-
-export function resumePoint(step: string | null | undefined): string {
-  const clean = (step ?? "").trim();
-  const prefix = STUCK_COPY.resumePrefix;
-  if (!clean) return prefix.replace(/:\s*$/, "");
-  const room = RESUME_CAP - prefix.length;
-  return prefix + (clean.length > room ? clean.slice(0, room - 1).trimEnd() + "…" : clean);
-}
+// --- the boundary (§4) -------------------------------------------------------------
+// the resume point is the server's to write, from the durable session.ended
+// (a dead network can't lose it); the window only says the evidence line.
 
 /** the boundary shows on a stuck run once it is over target, until the
- * person chooses - an open rewind question takes the stage instead */
+ * person chooses - the choice persists with the run in the sidecar, so a
+ * reload never asks again. an open rewind question takes the stage instead. */
 export function boundaryShowing(args: {
   running: boolean;
   runMode: string | null | undefined;
-  runId: number | null | undefined;
   overtime: boolean;
-  dismissedRunId: number | null;
+  boundaryChoice: string | null | undefined;
   questionOpen: boolean;
 }): boolean {
   return (
@@ -324,9 +315,7 @@ export function boundaryShowing(args: {
     args.runMode === "stuck" &&
     args.overtime &&
     !args.questionOpen &&
-    args.runId !== null &&
-    args.runId !== undefined &&
-    args.runId !== args.dismissedRunId
+    !args.boundaryChoice
   );
 }
 

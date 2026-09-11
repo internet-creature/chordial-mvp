@@ -28,6 +28,9 @@ export interface FocusState {
   run_mode?: "stuck" | null;
   episode_id?: string | null;
   execution_id?: string | null;
+  /** the boundary's persisted answer: "keep_going" once chosen (the
+   * other exit ends the run). null until the person chooses. */
+  boundary_choice?: "keep_going" | null;
   banked: Record<string, number>;
   frozen?: FrozenRun[];
 }
@@ -177,6 +180,14 @@ export const pauseFocus = (resolution?: Resolution, reason?: PauseReason) =>
       ...(resolution ? { resolution } : {}),
       ...(reason ? { reason } : {}),
     }),
+  });
+
+/** the boundary's "keep going", persisted with the run so a reload
+ * mid-overtime never asks again */
+export const keepGoingAtBoundary = () =>
+  request<{ focus: FocusState }>("/v1/focus/boundary", {
+    method: "POST",
+    body: JSON.stringify({ choice: "keep_going" }),
   });
 
 export const finishFocus = (resolution?: Resolution) =>

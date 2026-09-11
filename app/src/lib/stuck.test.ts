@@ -8,7 +8,6 @@ import {
   makeRequest,
   readStuckRequest,
   restEvidence,
-  resumePoint,
   setWhyHidden,
   STUCK_REQUEST_KEY,
   suggestsSleep,
@@ -210,25 +209,14 @@ describe("the handoff after do this", () => {
 
 
 describe("the boundary", () => {
-  it("shows on a stuck run over target until the person chooses", () => {
-    const base = { running: true, runMode: "stuck", runId: 4, overtime: true,
-                   dismissedRunId: null, questionOpen: false };
+  it("shows on a stuck run over target until the run carries a choice", () => {
+    const base = { running: true, runMode: "stuck", overtime: true,
+                   boundaryChoice: null, questionOpen: false };
     expect(boundaryShowing(base)).toBe(true);
     expect(boundaryShowing({ ...base, runMode: null })).toBe(false);
     expect(boundaryShowing({ ...base, overtime: false })).toBe(false);
-    expect(boundaryShowing({ ...base, dismissedRunId: 4 })).toBe(false);
-    expect(boundaryShowing({ ...base, dismissedRunId: 3 })).toBe(true);
+    expect(boundaryShowing({ ...base, boundaryChoice: "keep_going" })).toBe(false);
     expect(boundaryShowing({ ...base, questionOpen: true })).toBe(false);
     expect(boundaryShowing({ ...base, running: false })).toBe(false);
-  });
-
-  it("writes where they stopped, capped like any scope", () => {
-    expect(resumePoint("write one sentence"))
-      .toBe("pick up where you stopped: write one sentence");
-    expect(resumePoint(null)).toBe("pick up where you stopped");
-    expect(resumePoint("   ")).toBe("pick up where you stopped");
-    const long = resumePoint("x".repeat(200));
-    expect(long.length).toBeLessThanOrEqual(140);
-    expect(long.endsWith("…")).toBe(true);
   });
 });

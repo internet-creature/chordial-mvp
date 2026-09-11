@@ -52,6 +52,8 @@ def _parse(iso: str) -> datetime:
 RUN_MODE_STUCK = "stuck"
 # the reasons a pause may end a run with
 PAUSE_REASONS = ("paused", "boundary")
+# the one boundary choice that persists with the run ("stop here" ends it)
+BOUNDARY_KEEP_GOING = "keep_going"
 
 
 class AlreadyStarted(ValueError):
@@ -132,6 +134,7 @@ class FocusEngine:
             state["run_mode"] = _run_mode(active)
             state["episode_id"] = active.get("episode_id")
             state["execution_id"] = active.get("execution_id")
+            state["boundary_choice"] = active.get("boundary_choice")
         return state
 
     def is_stuck_run(self, run: Optional[dict]) -> bool:
@@ -184,22 +187,34 @@ class FocusEngine:
                 self._end_run(active, "switched")
 
         now = self.clock()
-        self.store.insert_run(
-            task_id, label, float(target_minutes), now.isoformat(),
-            run_mode=RUN_MODE_STUCK if handoff else None,
-            episode_id=handoff["episode_id"] if handoff else None,
-            execution_id=handoff["execution_id"] if handoff else None)
-        # target_minutes rides along so the server's day digest can say
-        # "18 min in, target 25" (docs/FOCUS_DOGFOOD_DESIGN.md section 3);
-        # a stuck run adds the ids the server attributes its outcome by
-        payload = {"task_id": task_id, "label": label,
-                   "target_minutes": float(target_minutes)}
-        if handoff:
-            payload.update({"run_mode": RUN_MODE_STUCK,
-                            "episode_id": handoff["episode_id"],
-                            "execution_id": handoff["execution_id"]})
-        self.store.enqueue("session.started", payload,
-                           occurred_at=now.isoformat())
+        # the run and its event land together or not at all (sol, #92)
+        with self.store.transaction():
+            self.store.insert_run(
+                task_id, label, float(target_minutes), now.isoformat(),
+                run_mode=RUN_MODE_STUCK if handoff else None,
+                episode_id=handoff["episode_id"] if handoff else None,
+                execution_id=handoff["execution_id"] if handoff else None)
+            # target_minutes rides along so the server's day digest can say
+            # "18 min in, target 25" (docs/FOCUS_DOGFOOD_DESIGN.md section
+            # 3); a stuck run adds the ids the server attributes it by
+            payload = {"task_id": task_id, "label": label,
+                       "target_minutes": float(target_minutes)}
+            if handoff:
+                payload.update({"run_mode": RUN_MODE_STUCK,
+                                "episode_id": handoff["episode_id"],
+                                "execution_id": handoff["execution_id"]})
+            self.store.enqueue("session.started", payload,
+                               occurred_at=now.isoformat())
+        return self.state()
+
+    def keep_going(self) -> dict:
+        """the boundary's other exit, persisted with the run: a reload
+        mid-overtime must not ask again (sol, #92). only a stuck run has
+        a boundary to keep going past."""
+        active = self.store.active_run()
+        if active is None or not self.is_stuck_run(active):
+            raise FocusError("no stuck run is at its boundary")
+        self.store.set_boundary_choice(active["id"], BOUNDARY_KEEP_GOING)
         return self.state()
 
     def pause(self, reason: str = "paused") -> Optional[dict]:
@@ -227,38 +242,44 @@ class FocusEngine:
         for the task. requires a running clock (finishing is an act of
         landing, not of tidying). an open correction freezes here too -
         the celebration waits one answer."""
-        active = self.store.active_run()
-        if active is None:
-            raise FocusError("no clock is running")
-        if self.store.open_offer_for_run(active["id"]) is not None:
-            return self._freeze(active, "finished")
-        summary = self._end_run(active, "finished")
-        self._emit_completed(active, summary)
-        return summary
+        with self.store.transaction():
+            active = self.store.active_run()
+            if active is None:
+                raise FocusError("no clock is running")
+            if self.store.open_offer_for_run(active["id"]) is not None:
+                return self._freeze(active, "finished")
+            summary = self._end_run(active, "finished")
+            self._emit_completed(active, summary)
+            return summary
 
     def close_frozen(self, run_id: int) -> dict:
         """bank a frozen run once its correction resolved: the run ends at
         its FREEZE instant (a late answer never inflates it), with
         credited seconds. emits the events its intended transition owed."""
-        run = self.store.run(run_id)
-        if run is None or run["ended_at"] is not None \
-                or not run.get("frozen_at"):
-            raise FocusError("no frozen run to close")
-        seconds = self._credited_seconds(run)
-        self.store.close_run(run_id, run["frozen_at"], seconds,
-                             run["frozen_reason"] or "paused")
-        self._announced.discard(run_id)
-        summary = {"task_id": run["task_id"], "label": run["label"],
-                   "seconds": seconds,
-                   "reason": run["frozen_reason"] or "paused",
-                   "ended_at": run["frozen_at"]}
-        self._emit_ended(run, summary)
-        if run["frozen_reason"] == "finished":
-            self._emit_completed(run, summary)
-        return summary
+        with self.store.transaction():
+            run = self.store.run(run_id)
+            if run is None or run["ended_at"] is not None \
+                    or not run.get("frozen_at"):
+                raise FocusError("no frozen run to close")
+            seconds = self._credited_seconds(run)
+            self.store.close_run(run_id, run["frozen_at"], seconds,
+                                 run["frozen_reason"] or "paused")
+            self._announced.discard(run_id)
+            summary = {"task_id": run["task_id"], "label": run["label"],
+                       "seconds": seconds,
+                       "reason": run["frozen_reason"] or "paused",
+                       "ended_at": run["frozen_at"]}
+            self._emit_ended(run, summary)
+            if run["frozen_reason"] == "finished":
+                self._emit_completed(run, summary)
+            return summary
 
     def _freeze(self, active: dict, reason: str) -> dict:
         now = self.clock()
+        with self.store.transaction():
+            return self._freeze_inside(active, reason, now)
+
+    def _freeze_inside(self, active: dict, reason: str, now) -> dict:
         self.store.freeze_run(active["id"], now.isoformat(), reason)
         # the server must see the clock STOP: nothing banks until the
         # correction resolves, but a session.started with no transition
@@ -351,12 +372,14 @@ class FocusEngine:
     def _end_run(self, active: dict, reason: str) -> dict:
         now = self.clock()
         seconds = self._credited_seconds(active)
-        self.store.close_run(active["id"], now.isoformat(), seconds, reason)
+        # the close and its event land together (sol, #92)
+        with self.store.transaction():
+            self.store.close_run(active["id"], now.isoformat(), seconds, reason)
+            summary = {"task_id": active["task_id"], "label": active["label"],
+                       "seconds": seconds, "reason": reason,
+                       "ended_at": now.isoformat()}
+            self._emit_ended(active, summary)
         self._announced.discard(active["id"])
-        summary = {"task_id": active["task_id"], "label": active["label"],
-                   "seconds": seconds, "reason": reason,
-                   "ended_at": now.isoformat()}
-        self._emit_ended(active, summary)
         return summary
 
 

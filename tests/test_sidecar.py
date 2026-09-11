@@ -761,3 +761,63 @@ def test_stuck_route_replays_boundary_and_stop(store):
         assert resp.status in (400, 409)
         await ws.close()
     _sidecar_client_flow(store, clock, flow)
+
+
+
+def test_a_transition_and_its_event_land_together(store, monkeypatch):
+    """a crash between the run row and its event leaves a half-truth the
+    server can never repair (sol, #92): the two commit as one."""
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    real_enqueue = store.enqueue
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(store, "enqueue", explode)
+    with pytest.raises(RuntimeError):
+        engine.start(7, "novel", 25)
+    assert store.active_run() is None          # the run rolled back with it
+    monkeypatch.setattr(store, "enqueue", real_enqueue)
+    engine.start(7, "novel", 25)
+    assert store.active_run() is not None
+    clock.advance(minutes=5)
+    monkeypatch.setattr(store, "enqueue", explode)
+    with pytest.raises(RuntimeError):
+        engine.pause()
+    assert store.active_run() is not None      # the close rolled back too
+    monkeypatch.setattr(store, "enqueue", real_enqueue)
+    assert engine.pause()["seconds"] == 300
+
+
+def test_keep_going_persists_with_the_run(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    with pytest.raises(FocusError, match="no stuck run"):
+        engine.keep_going()
+    engine.start(7, "novel", 25)
+    with pytest.raises(FocusError, match="no stuck run"):
+        engine.keep_going()                     # a plain run has no boundary
+    engine.pause()
+    engine.start(7, "stuck-mode design: one sentence", 2, execution=HANDOFF)
+    assert engine.state()["boundary_choice"] is None
+    clock.advance(minutes=3)
+    assert engine.keep_going()["boundary_choice"] == "keep_going"
+    # a restart mid-overtime remembers the choice
+    again = FocusEngine(store, clock=clock)
+    assert again.state()["boundary_choice"] == "keep_going"
+
+
+def test_boundary_route(store):
+    clock = Clock()
+
+    async def flow(client, _service):
+        resp = await client.post("/v1/focus/boundary", json={"choice": "keep_going"})
+        assert resp.status == 409
+        await client.post("/v1/focus/start", json={
+            "task_id": 7, "label": "x", "target_minutes": 2, "execution": HANDOFF})
+        resp = await client.post("/v1/focus/boundary", json={"choice": "nope"})
+        assert resp.status == 400
+        resp = await client.post("/v1/focus/boundary", json={"choice": "keep_going"})
+        assert resp.status == 200
+        assert (await resp.json())["focus"]["boundary_choice"] == "keep_going"
+    _sidecar_client_flow(store, clock, flow)

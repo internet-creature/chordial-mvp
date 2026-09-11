@@ -730,7 +730,8 @@ def test_outcomes_fold_from_the_run_that_carries_the_execution(store, db, device
         assert row.run_ref["device_id"] == device["pk"] and row.run_ref["event_uuid"]
         assert row.outcome == {"started": True, "banked_seconds": 130,
                                "reason": "boundary", "stopped_at_boundary": True,
-                               "kept_going": False}
+                               "kept_going": False,
+                               "resume_point": "pick up where you stopped: one sentence"}
     assert after["status"] == stuck.ACCEPTED
     ep2, _ = store.open(U1, request_uuid=str(uuid_mod.uuid4()), surface="home")
     lines = store.recent_summaries(U1, exclude_uuid=ep2["episode_id"])
@@ -764,3 +765,48 @@ def test_plain_and_foreign_runs_never_fold(store, db, device):
         row = s.query(StuckEpisode).filter(
             StuckEpisode.episode_uuid == done["episode_id"]).one()
         assert row.outcome is None and row.run_ref is None
+
+
+
+def test_stop_here_writes_the_resume_point_from_the_durable_event(store, db, device):
+    done = _accepted_episode(store, db)
+    t1 = done["execution"]["task_id"]
+    ids = {"episode_id": done["episode_id"],
+           "execution_id": done["execution"]["execution_id"], "run_mode": "stuck"}
+    with db() as s:
+        assert s.get(Task, t1).next_action == "one sentence"   # the accept wrote it
+    _land(device, "session.ended",
+          {"task_id": t1, "label": "the thing: one sentence", "seconds": 130,
+           "reason": "boundary", "target_minutes": 2.0, **ids},
+          NOW + timedelta(minutes=2, seconds=10))
+    with db() as s:
+        assert s.get(Task, t1).next_action == "pick up where you stopped: one sentence"
+        row = s.query(StuckEpisode).filter(
+            StuckEpisode.episode_uuid == done["episode_id"]).one()
+        assert row.outcome["resume_point"] == "pick up where you stopped: one sentence"
+
+
+def test_the_resume_point_never_overwrites_a_step_the_person_rewrote(store, db, device):
+    done = _accepted_episode(store, db)
+    t1 = done["execution"]["task_id"]
+    ids = {"episode_id": done["episode_id"],
+           "execution_id": done["execution"]["execution_id"], "run_mode": "stuck"}
+    with db() as s:
+        s.get(Task, t1).next_action = "their own words"
+        s.commit()
+    _land(device, "session.ended",
+          {"task_id": t1, "label": "x", "seconds": 130, "reason": "boundary",
+           "target_minutes": 2.0, **ids}, NOW + timedelta(minutes=3))
+    with db() as s:
+        assert s.get(Task, t1).next_action == "their own words"
+        row = s.query(StuckEpisode).filter(
+            StuckEpisode.episode_uuid == done["episode_id"]).one()
+        assert "resume_point" not in row.outcome
+        assert row.outcome["stopped_at_boundary"] is True
+
+
+def test_resume_point_is_capped_like_any_scope():
+    assert stuck.resume_point("one sentence") == "pick up where you stopped: one sentence"
+    assert stuck.resume_point("") == "pick up where you stopped"
+    long = stuck.resume_point("x" * 300)
+    assert len(long) <= stuck.NEXT_ACTION_CAP and long.endswith("…")

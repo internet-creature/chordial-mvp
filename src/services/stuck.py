@@ -1006,6 +1006,20 @@ class StuckStore:
 
 FOLDED_TYPES = frozenset({"session.started", "session.ended"})
 REASON_BOUNDARY = "boundary"
+# the v0 resume point (section 4): the step they did, marked as begun -
+# written here, from the durable session.ended, so a dead network or a
+# closed window can't lose it (sol, #92). one writer: the server.
+RESUME_PREFIX = "pick up where you stopped: "
+
+
+def resume_point(step: Optional[str]) -> str:
+    clean = " ".join((step or "").split())
+    if not clean:
+        return RESUME_PREFIX.rstrip(": ")
+    room = NEXT_ACTION_CAP - len(RESUME_PREFIX)
+    if len(clean) > room:
+        clean = clean[:room - 1].rstrip() + "…"
+    return RESUME_PREFIX + clean
 
 
 def fold_event(db, row) -> None:
@@ -1046,7 +1060,34 @@ def fold_event(db, row) -> None:
         if target_seconds is not None:
             outcome["kept_going"] = (reason != REASON_BOUNDARY
                                      and seconds > target_seconds)
+        if reason == REASON_BOUNDARY:
+            written = _write_resume_point(db, ep)
+            if written is not None:
+                outcome["resume_point"] = written
     ep.outcome = outcome
+
+
+def _write_resume_point(db, ep: StuckEpisode) -> Optional[str]:
+    """the accepted proposal's prepared step becomes the resume point -
+    only while the task still carries that step untouched. a step the
+    person already rewrote is theirs; a task since closed is left alone."""
+    accepted = next((p for p in (ep.proposals or [])
+                     if p.get("proposal_id") == ep.accepted_proposal_id), None)
+    step = (accepted or {}).get("prepared_step") or {}
+    if not step.get("task_id") or not step.get("next_action"):
+        return None
+    task = db.query(Task).filter(Task.user_uuid == ep.user_uuid,
+                                 Task.id == step["task_id"]).first()
+    if task is None or task.status not in vocab.TASK_STATUS_OPEN:
+        return None
+    current = " ".join((task.next_action or "").split())
+    expected = " ".join(str(step["next_action"]).split())[:NEXT_ACTION_CAP].strip()
+    if current != expected:
+        return None
+    value = resume_point(expected)
+    task.next_action = value
+    task.updated_at = utc_now()
+    return value
 
 
 def execution_for(row: StuckEpisode, proposal: dict) -> dict:

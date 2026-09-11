@@ -110,6 +110,7 @@ class SidecarService:
         app.router.add_get("/v1/state", self._state)
         app.router.add_post("/v1/focus/start", self._focus_start)
         app.router.add_post("/v1/focus/pause", self._focus_pause)
+        app.router.add_post("/v1/focus/boundary", self._focus_boundary)
         app.router.add_post("/v1/focus/finish", self._focus_finish)
         app.router.add_post("/v1/focus/rewind", self._rewind)
         app.router.add_post("/v1/focus/rewind/undo", self._rewind_undo)
@@ -378,6 +379,21 @@ class SidecarService:
         return web.json_response({"focus": state, "line": line,
                                   "offer": self.offers.payload(),
                                   "replayed": False})
+
+    async def _focus_boundary(self, request: web.Request) -> web.Response:
+        """the boundary's "keep going", persisted with the run (section
+        4; sol's #92 round): body {choice: "keep_going"}. "stop here" is
+        a pause with reason "boundary"."""
+        body = await _json_body(request) or {}
+        choice = body.get("choice") if isinstance(body, dict) else None
+        if choice != "keep_going":
+            return _error("choice must be keep_going")
+        try:
+            state = self.engine.keep_going()
+        except FocusError as e:
+            return _error(str(e), status=409)
+        await self._broadcast(self._world())
+        return web.json_response({"focus": state})
 
     async def _focus_pause(self, request: web.Request) -> web.Response:
         body = await _json_body(request) or {}

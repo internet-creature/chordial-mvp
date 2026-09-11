@@ -19,6 +19,7 @@ import {
   type FocusState,
   type Resolution,
   type RewindOffer,
+  keepGoingAtBoundary,
 } from "../api/sidecar";
 import type { DoneTaskRow, TaskRow } from "../api/types";
 import { useToday } from "../lib/useToday";
@@ -93,9 +94,7 @@ import InlineContent from "./InlineContent";
 import {
   boundaryShowing,
   makeRequest,
-  resumePoint,
   STUCK_COPY,
-  titleMap,
   writeStuckRequest,
 } from "../lib/stuck";
 
@@ -702,24 +701,23 @@ export default function DeerWindow() {
     offer !== null && focus.running && offer.run_id === focus.run_id;
 
   // the stuck run's boundary (docs/STUCK_MODE_DESIGN.md §4): two exits,
-  // equal weight, shown from the state (the line may be hushed). "keep
-  // going" dismisses it for this run; the clock just keeps counting.
-  const [boundaryDismissedRun, setBoundaryDismissedRun] = useState<number | null>(null);
+  // equal weight, shown from the state (the line may be hushed). the
+  // choice persists with the run in the sidecar - a reload never asks
+  // again (sol, #92).
   const boundary = boundaryShowing({
     running: focus.running,
     runMode: focus.run_mode,
-    runId: focus.run_id,
     overtime,
-    dismissedRunId: boundaryDismissedRun,
+    boundaryChoice: focus.boundary_choice,
     questionOpen: offerOnActiveRun,
   });
 
-  /** stop here: the run banks under its own name, and where they stopped
-   * is written onto the task so next time doesn't start from blank */
+  /** stop here: the run banks under its own name. the resume point is
+   * the server's to write from the durable session.ended - here only the
+   * evidence line, a beat after the stop's own. */
   async function onStopHere() {
     if (busy) return;
     const taskId = focus.task_id;
-    const label = focus.label ?? "";
     setBusy(true);
     setConfirmingFinish(false);
     setConfirmingPause(false);
@@ -728,14 +726,8 @@ export default function DeerWindow() {
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
       say(result.line);
-      if (result.focus.running || !token || typeof taskId !== "number") return;
-      const title = titleMap(today?.buckets).get(taskId) ?? null;
-      const { scope } = splitLabel(label, title);
-      try {
-        await patchTask(token, taskId, { next_action: resumePoint(scope) });
+      if (!result.focus.running && typeof taskId === "number") {
         window.setTimeout(() => say(STUCK_COPY.resumeLine), 4000);
-      } catch {
-        showNotice(STUCK_COPY.resumeSaveFailed);
       }
     } catch (err) {
       showNotice(err instanceof Error ? err.message : "action failed — try again");
@@ -744,8 +736,17 @@ export default function DeerWindow() {
     }
   }
 
-  function onKeepGoing() {
-    if (typeof focus.run_id === "number") setBoundaryDismissedRun(focus.run_id);
+  async function onKeepGoing() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await keepGoingAtBoundary();
+      setFocus(result.focus);
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function onPause() {

@@ -525,8 +525,17 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    evidence line; the server folds `session.started/ended` carrying the episode's
    own execution id into `StuckEpisode.outcome` (`banked_seconds`,
    `stopped_at_boundary`, `kept_going` from the target, `run_ref`) inside
-   focus_flow's claimed transaction. NOT built: the 10 / 25 retarget chip after
-   "keep going" — the sidecar has no retarget endpoint; a later nicety.)* —
+   focus_flow's claimed transaction. sol's #92 round: the resume point is the
+   SERVER's to write, from the durable `session.ended` (reason boundary) — only
+   while the task still carries the accepted step untouched — so a dead network
+   or a closed window can't lose it; the "keep going" choice persists with the
+   run in the sidecar (`POST /v1/focus/boundary`, `focus.boundary_choice`) so a
+   reload never asks again; the sidecar commits each run transition and its
+   outbox event in ONE transaction (`store.transaction()`); the page keeps the
+   accepted episode's execution and offers "start it ▸" on the same execution
+   after a failed or lost handoff (the sidecar dedupes; "already ran" is final).
+   NOT built: the 10 / 25 retarget chip after "keep going" — the sidecar has no
+   retarget endpoint; a later nicety.)* —
    accept-time `next_action` write; idempotent execution handoff;
    step / switch / thread / company; `run_mode="stuck"`; the boundary exit with two
    equal buttons; `stuck_stopped` + resume-point write; globally attributable events.

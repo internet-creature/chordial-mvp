@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { StuckEpisode, StuckProposal, StuckReaction } from "../api/types";
+import type {
+  StuckEpisode,
+  StuckExecution,
+  StuckProposal,
+  StuckReaction,
+} from "../api/types";
 import { fetchStuck, isAuthError, openStuck, reactStuck } from "../api/client";
 import { startFocus } from "../api/sidecar";
 import { showCompanion } from "../lib/tauriWindow";
@@ -49,6 +54,7 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
   const [tick, setTick] = useState(0);
   const [hideWhy, setHideWhy] = useState(() => whyHidden(window.localStorage));
   const [handoffLine, setHandoffLine] = useState<string | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const closedRef = useRef(false);
 
   const titles = titleMap(today?.buckets);
@@ -179,24 +185,48 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
     if (result?.outcome === "exhausted") setResting(true);
   };
 
-  const onDoThis = async () => {
-    const card = visibleProposal(episode);
-    if (!card) return;
-    const result = await react("accepted", card);
-    if (!result?.execution) return;
-    const plan = handoffFor(result.execution, titles);
-    if (plan.kind === "start") {
+  /** the handoff, retryable on the SAME execution: the sidecar dedupes
+   * on it, so a lost response or a dead companion costs nothing but a
+   * second press (sol, #92). */
+  const handoff = useCallback(
+    async (execution: StuckExecution) => {
+      const plan = handoffFor(execution, titles);
+      if (plan.kind !== "start") {
+        setHandoffLine(plan.line);
+        return;
+      }
+      setBusy(true);
+      setHandoffError(null);
       try {
         await startFocus(plan.taskId, plan.label, plan.minutes, undefined, plan.execution);
         await showCompanion().catch(() => undefined);
         setHandoffLine(STUCK_COPY.startedLine);
       } catch (e) {
-        setError(e instanceof Error ? e.message : STUCK_COPY.errorReact);
+        const message = e instanceof Error ? e.message : "";
+        setHandoffError(
+          /already ran/.test(message) ? STUCK_COPY.startSpent : STUCK_COPY.startFailed,
+        );
+      } finally {
+        setBusy(false);
       }
-      return;
-    }
-    setHandoffLine(plan.line);
+    },
+    [titles],
+  );
+
+  const onDoThis = async () => {
+    const card = visibleProposal(episode);
+    if (!card) return;
+    const result = await react("accepted", card);
+    if (!result?.execution) return;
+    await handoff(result.execution);
   };
+
+  // an accepted response lost on the wire: the re-fetch (the 409 path in
+  // `react`) lands here with the execution still on the episode
+  const startable =
+    episode?.status === "accepted" && episode.execution
+      ? handoffFor(episode.execution, titles).kind === "start"
+      : false;
 
   const askAgain = () => {
     if (episode && !["accepted", "rested", "closed", "failed"].includes(episode.status)) {
@@ -258,8 +288,22 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
           </>
         ) : chosen ? (
           <>
-            <p className="stuck-rest-line">{STUCK_COPY.chosenLine}</p>
-            <button className="stuck-do" onClick={() => leave("closed")}>
+            <p className="stuck-rest-line">
+              {handoffError ?? STUCK_COPY.chosenLine}
+            </p>
+            {startable && episode.execution && handoffError !== STUCK_COPY.startSpent && (
+              <button
+                className="stuck-do"
+                onClick={() => episode.execution && handoff(episode.execution)}
+                disabled={busy}
+              >
+                {STUCK_COPY.startIt}
+              </button>
+            )}
+            <button
+              className={startable ? "stuck-alt" : "stuck-do"}
+              onClick={() => leave("closed")}
+            >
               {STUCK_COPY.close}
             </button>
           </>

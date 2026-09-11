@@ -67,6 +67,10 @@ KNOWN_EVENT_TYPES = frozenset({
     "rewind.applied",
     "rewind.kept",
     "rewind.undone",
+    # stuck mode's away episode (docs/STUCK_MODE_DESIGN.md section 4.1):
+    # opened, and the one real return
+    "attention.away",
+    "attention.returned",
 })
 
 

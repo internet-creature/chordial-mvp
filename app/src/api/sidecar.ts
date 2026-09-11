@@ -94,6 +94,27 @@ export interface ActivityFlags {
   drifting: boolean;
 }
 
+/** the away episode (docs/STUCK_MODE_DESIGN.md §4 + §4.1): the step
+ * waiting underneath while they're off the desk; `returned_at` is the
+ * one real return - the re-offer shows from it, hushed deer or not */
+export interface AwayState {
+  execution_id: string;
+  episode_id: string;
+  task_id: number | null;
+  label: string | null;
+  next_action: string | null;
+  minutes: number | null;
+  /** the step's own target, never the away duration; has_step says
+   * whether anything waits underneath at all */
+  step_minutes: number | null;
+  has_step: boolean;
+  opened_at: string;
+  departed_at: string | null;
+  returned_at: string | null;
+  seconds_away: number;
+  phase: "present" | "possibly_away" | "away" | "returned";
+}
+
 export interface SidecarState {
   focus: FocusState;
   activity?: ActivityFlags;
@@ -101,6 +122,7 @@ export interface SidecarState {
   line: string | null;
   linked: boolean;
   sync_error: string | null;
+  away?: AwayState | null;
 }
 
 export type SidecarPush =
@@ -109,6 +131,7 @@ export type SidecarPush =
       focus: FocusState;
       activity?: ActivityFlags;
       offer?: RewindOffer | null;
+      away?: AwayState | null;
     }
   | { type: "line"; moment: string; text: string }
   | { type: "rewind_offer"; offer: RewindOffer | null };
@@ -189,6 +212,45 @@ export const keepGoingAtBoundary = () =>
     method: "POST",
     body: JSON.stringify({ choice: "keep_going" }),
   });
+
+/** a body proposal that leaves the desk: the clock pauses, the step waits */
+export const startAway = (body: {
+  execution: StuckHandoff;
+  task_id?: number | null;
+  label?: string | null;
+  next_action?: string | null;
+  minutes?: number | null;
+  step_minutes?: number | null;
+}) =>
+  request<{
+    focus: FocusState;
+    away: AwayState | null;
+    line: string;
+    replayed?: boolean;
+  }>("/v1/away/start", { method: "POST", body: JSON.stringify(body) });
+
+export type AwayChoice = "start" | "not_now" | "back";
+
+/** the waiting step answered, against the execution the card showed: start
+ * it, let it go, or just "back" when nothing waited underneath */
+export const resolveAway = (choice: AwayChoice, executionId: string) =>
+  request<{
+    focus: FocusState;
+    away: AwayState | null;
+    line: string;
+    replayed?: boolean;
+  }>("/v1/away/step", {
+    method: "POST",
+    body: JSON.stringify({ choice, execution_id: executionId }),
+  });
+
+/** a chordial surface came into (or left) view: presence as good as a
+ * keystroke for the attention seam */
+export const postAttention = (visible: boolean) =>
+  request<{ ok: boolean }>("/v1/attention", {
+    method: "POST",
+    body: JSON.stringify({ visible }),
+  }).catch(() => undefined);
 
 export const finishFocus = (resolution?: Resolution) =>
   request<TransitionResponse>("/v1/focus/finish", {

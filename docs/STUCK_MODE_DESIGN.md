@@ -560,7 +560,17 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    its episode); the page hands `pause_and_away` to the sidecar as an away and
    shows *then: start the step ▸* under an in-chair or sound line; the den shows
    the away card (count-up, the waiting step, "i'm back — start it" / "not now",
-   and on a real return "back? the step is still ready."). NOT built: screen
+   and on a real return "back? the step is still ready.").
+   sol's #93 round: a return is RENEWED input — the collector's reported idle
+   resetting between two samples — held across the debounce; the computed idle
+   climbing after one sample is not input, and a new sample with no input behind
+   it closes the window a twitch opened; `/v1/away/start` dedupes before it
+   touches the clock and commits pause + open together; `/v1/away/step` takes the
+   expected `execution_id`, commits the step's start and the episode's close as
+   one, replays a lost success, refuses "start" when nothing waits (`has_step`)
+   and offers "back" instead; the step's own target (`step_minutes`, 2) is stored
+   apart from the away duration; the HTTP snapshot carries `away`; the page can
+   retry an away handoff on its execution. NOT built: screen
    lock/wake and opt-in app categories (the machine has the seam), and the
    sound proposal opening anything (willowden's privilege ladder).)* — durable
    `AttentionState` / `AwayEpisode`; existing-signal

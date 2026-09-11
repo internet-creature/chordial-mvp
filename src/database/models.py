@@ -1078,3 +1078,91 @@ class RewindDecision(Base):
     __table_args__ = (
         Index('ix_rewind_decisions_open', 'user_uuid', 'closed_at'),
     )
+
+
+# --- stuck mode (docs/STUCK_MODE_DESIGN.md sections 5 + 7) -------------------
+# one press of "i'm stuck" opens an episode; the turn (or the fallback ladder)
+# fills it with three proposals of three kinds; the person's reactions are an
+# append-only ledger beside it. generating and browsing proposals changes
+# nothing outside these two tables - effects happen only on acceptance.
+
+
+class StuckEpisode(Base):
+    """one press of the button (STUCK_MODE_DESIGN.md section 5.1 + 7).
+
+    lifecycle, server-owned: thinking -> ready | fallback | failed;
+    ready -> thinking only when a new generation is owed (the third
+    "something different"); ready | fallback -> accepted | rested | closed.
+    terminal states reject later model writes, so a slow turn that lands
+    after the person already chose cannot rewrite the card under them.
+
+    `proposals` holds every generation's validated set in order, each item
+    carrying its server-assigned `proposal_id` and `generation` - the model
+    never invents identifiers. `request_uuid` (unique per device) makes the
+    create idempotent: a retried press replays the same episode instead of
+    opening a second one. `execution_id` is minted once at acceptance and
+    the sidecar deduplicates on it before starting or pausing a run.
+    `run_ref` and `outcome` are folded later from the device event stream;
+    device-local integer run ids are never treated as globally unique.
+    """
+    __tablename__ = 'stuck_episodes'
+
+    id = Column(Integer, primary_key=True)
+    episode_uuid = Column(String, nullable=False, unique=True,
+                          default=lambda: str(uuid.uuid4()))
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False,
+                       index=True)
+    # the device that pressed; null for surfaces without one (rooms, telegram)
+    device_id = Column(Integer, ForeignKey('devices.id'), nullable=True)
+    request_uuid = Column(String, nullable=False)   # client idempotency key
+    surface = Column(String, nullable=False)        # companion|home|tray|room|telegram
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=True)
+    status = Column(String, nullable=False, default='thinking')
+    # thinking|ready|fallback|failed|accepted|rested|closed
+    generation = Column(Integer, nullable=False, default=1)
+    proposals = Column(JSON, nullable=True)         # list of proposal dicts
+    error = Column(String, nullable=True)           # why `failed`, if it did
+    # the ladder ran out of fresh kinds (or a gen-2 card was fully turned
+    # down): the client's cue to show the rest branch; the card stays
+    exhausted = Column(Boolean, nullable=False, default=False,
+                       server_default=false())
+    accepted_proposal_id = Column(String, nullable=True)
+    accepted_kind = Column(String, nullable=True)
+    execution_id = Column(String, nullable=True)    # minted once, at accept
+    run_ref = Column(JSON, nullable=True)           # {device_uuid, event_uuid}
+    outcome = Column(JSON, nullable=True)           # folded from device events
+    opened_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    ready_at = Column(DateTime, nullable=True)      # first card shown
+    closed_at = Column(DateTime, nullable=True)     # any terminal state
+
+    __table_args__ = (
+        UniqueConstraint('device_id', 'request_uuid',
+                         name='uq_stuck_episodes_device_request'),
+        Index('ix_stuck_episodes_open', 'user_uuid', 'closed_at'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class StuckReaction(Base):
+    """the append-only companion ledger: one row per reaction to a proposal
+    (accepted | different | too_much | closed). separate rows make retries
+    and concurrent surfaces safe without rewriting a json map on the
+    episode; `request_uuid` is unique so a retried react is a replay, never
+    a second reaction. `proposal_id` is null for episode-level reactions
+    (too_much on the rest branch, closed)."""
+    __tablename__ = 'stuck_reactions'
+
+    id = Column(Integer, primary_key=True)
+    episode_id = Column(Integer, ForeignKey('stuck_episodes.id'),
+                        nullable=False, index=True)
+    # denormalized from the episode so tenant-scoped reads never join
+    user_uuid = Column(String, ForeignKey('users.uuid'), nullable=False)
+    proposal_id = Column(String, nullable=True)
+    generation = Column(Integer, nullable=False)
+    reaction = Column(String, nullable=False)   # accepted|different|too_much|closed
+    request_uuid = Column(String, nullable=False, unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )

@@ -43,6 +43,10 @@ def build_default_registry() -> ToolRegistry:
     # edwin's filed scorecards (phase 6): read-only from conversation -
     # the cycle scorer is the only writer
     registry.register(LIST_ASSESSMENTS)
+    # the stuck turn's one write (docs/STUCK_MODE_DESIGN.md 5.3): pip's
+    # card allowlists it; it refuses to act outside a stuck turn
+    from .stuck_tools import PROPOSE_UNSTUCK
+    registry.register(PROPOSE_UNSTUCK)
 
     # the native workspace surface: tasks/plans/cycles (core) plus the v3
     # additions (goals/wins/check-ins/notes/occasions). all in-db, always on.

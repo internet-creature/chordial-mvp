@@ -48,6 +48,8 @@ from src.services.workspace import get_store, vocab
 from src.services.workspace.agenda import user_today
 from src.services.workspace.focus import FocusStore
 from src.services import device_sync, focus_flow
+from src.services import stuck as stuck_mod
+from src.services.stuck_turns import StuckTurns
 from src.services.cycles import CycleStore
 from src.utils.timezone_utils import utc_now
 from src.web import auth, device_auth, receipts
@@ -134,6 +136,14 @@ class WebService:
         # first one's lines. weak values, same pattern as ChatService's locks.
         self._send_locks: WeakValueDictionary[str, asyncio.Lock] = \
             WeakValueDictionary()
+        # stuck mode (docs/STUCK_MODE_DESIGN.md section 5): the episode
+        # store and the turn runner. the orchestrator is read lazily from
+        # the chat seam - None on chat-less deployments, where the fallback
+        # ladder is the card from the first second
+        self.stuck = stuck_mod.StuckStore()
+        self.stuck_turns = StuckTurns(
+            store=self.stuck,
+            orchestrator=lambda: getattr(self.chat_service, "orchestrator", None))
         self._limiter = auth.RateLimiter(
             attempts=Config.LINK_RATE_ATTEMPTS,
             window_seconds=Config.LINK_RATE_WINDOW_SECONDS)
@@ -181,6 +191,12 @@ class WebService:
         # the shaping seam (docs/FOCUS_DOGFOOD_DESIGN.md section 4): scope,
         # reschedule, status, set aside - any subset in one body
         app.router.add_patch("/api/v1/tasks/{task_id}", self._api_v1_task_patch)
+        # stuck mode (docs/STUCK_MODE_DESIGN.md section 5.1): one press
+        # opens an episode, the page polls it, reactions move it
+        app.router.add_post("/api/v1/stuck", self._api_v1_stuck_open)
+        app.router.add_get("/api/v1/stuck/{episode_id}", self._api_v1_stuck_get)
+        app.router.add_post("/api/v1/stuck/{episode_id}/react",
+                            self._api_v1_stuck_react)
         # rooms v0: the legacy per-user stream presented as today's room.
         # phase 2 makes rooms first-class; these routes keep their shape.
         app.router.add_get("/api/v1/rooms/current", self._api_room_current)
@@ -228,6 +244,8 @@ class WebService:
             app.router.add_get("/api/ops/usage", self._api_ops_usage)
         app.on_startup.append(self._start_flow_sweep)
         app.on_cleanup.append(self._stop_flow_sweep)
+        app.on_startup.append(self._start_stuck_sweep)
+        app.on_cleanup.append(self._stop_stuck_sweep)
         return app
 
     # --- the focus-flow sweep --------------------------------------------------
@@ -259,6 +277,41 @@ class WebService:
                 raise
             except Exception:
                 logger.exception("focus-flow sweep failed; retrying next tick")
+
+    # --- the stuck sweep -------------------------------------------------------
+    # an episode nobody touched for the TTL is closed here, so correctness
+    # never depends on the page's unload request arriving (STUCK_MODE_DESIGN
+    # section 5.1).
+
+    async def _start_stuck_sweep(self, _app) -> None:
+        # a restart between "episode committed" and "turn spawned" left a
+        # thinking row with no runner: the row is the claim, resume it
+        try:
+            await self.stuck_turns.resume_all()
+        except Exception:
+            logger.exception("stuck resume at startup failed")
+        self._stuck_sweep = asyncio.create_task(self._stuck_sweep_loop())
+
+    async def _stop_stuck_sweep(self, _app) -> None:
+        task = getattr(self, "_stuck_sweep", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _stuck_sweep_loop(self) -> None:
+        while True:
+            await asyncio.sleep(Config.STUCK_SWEEP_SECONDS)
+            try:
+                await asyncio.to_thread(self.stuck.sweep,
+                                        Config.STUCK_EPISODE_TTL_MINUTES)
+                await self.stuck_turns.resume_all()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("stuck sweep failed; retrying next tick")
 
     async def start(self):
         self._stop_event = asyncio.Event()
@@ -838,6 +891,112 @@ class WebService:
             return web.json_response({"ok": True, "task": _task_row(task)})
         return await asyncio.to_thread(update)
 
+    # --- stuck mode (docs/STUCK_MODE_DESIGN.md section 5.1) -------------------
+
+    async def _api_v1_stuck_open(self, request: web.Request) -> web.Response:
+        """one press. opens an episode (idempotent per device + request_id)
+        and spawns the turn; the page polls GET until a card exists. body:
+        {surface, request_id, task_id?}. generating proposals changes
+        nothing outside the episode."""
+        identity = await self._device(request)
+        body = await _json_body(request)
+        if not isinstance(body, dict):
+            return _error("body must be a json object")
+        unknown = set(body) - _STUCK_OPEN_KEYS
+        if unknown:
+            return _error("unknown field(s): " + ", ".join(sorted(unknown)))
+        request_id = _uuid_field(body.get("request_id"))
+        if request_id is None:
+            return _error("request_id must be a uuid")
+        surface = body.get("surface") or "companion"
+        if surface not in stuck_mod.SURFACES:
+            return _error("surface must be one of " + ", ".join(stuck_mod.SURFACES))
+        task_id = body.get("task_id")
+        if task_id is not None and not isinstance(task_id, int):
+            return _error("task_id must be an integer")
+
+        def open_episode():
+            try:
+                return self.stuck.open(
+                    identity.user_uuid, request_uuid=request_id,
+                    surface=surface, device_id=identity.id, task_id=task_id)
+            except ValueError as e:
+                return _error(str(e), status=404)
+        result = await asyncio.to_thread(open_episode)
+        if isinstance(result, web.Response):
+            return result
+        episode, created = result
+        # created or replayed, a thinking row owes a card: exactly one runner
+        self.stuck_turns.ensure(identity.user_uuid, episode)
+        return web.json_response({"ok": True, "episode": episode,
+                                  "replayed": not created},
+                                 status=201 if created else 200)
+
+    async def _api_v1_stuck_get(self, request: web.Request) -> web.Response:
+        identity = await self._device(request)
+        episode_id = _uuid_field(request.match_info.get("episode_id"))
+        if episode_id is None:
+            return _error("episode id must be a uuid")
+        episode = await asyncio.to_thread(
+            self.stuck.get, identity.user_uuid, episode_id)
+        if episode is None:
+            return _error("episode not found", status=404)
+        # the poll is the resume path after a restart: thinking + no runner
+        self.stuck_turns.ensure(identity.user_uuid, episode)
+        return web.json_response({"ok": True, "episode": episode})
+
+    async def _api_v1_stuck_react(self, request: web.Request) -> web.Response:
+        """body: {reaction, generation, request_id, proposal_id?}. accepting
+        claims the proposal and writes its one prepared next_action in the
+        same transaction; the response carries the typed execution the
+        sidecar deduplicates on. a third 'different' owes a new generation
+        and spawns its turn here. too_much and closed change nothing."""
+        identity = await self._device(request)
+        body = await _json_body(request)
+        if not isinstance(body, dict):
+            return _error("body must be a json object")
+        unknown = set(body) - _STUCK_REACT_KEYS
+        if unknown:
+            return _error("unknown field(s): " + ", ".join(sorted(unknown)))
+        episode_id = _uuid_field(request.match_info.get("episode_id"))
+        if episode_id is None:
+            return _error("episode id must be a uuid")
+        request_id = _uuid_field(body.get("request_id"))
+        if request_id is None:
+            return _error("request_id must be a uuid")
+        reaction = body.get("reaction")
+        if reaction not in stuck_mod.REACTIONS:
+            return _error("reaction must be one of " + ", ".join(stuck_mod.REACTIONS))
+        generation = body.get("generation")
+        if not isinstance(generation, int):
+            return _error("generation must be an integer")
+        proposal_id = body.get("proposal_id")
+        if proposal_id is not None and not isinstance(proposal_id, str):
+            return _error("proposal_id must be a string")
+        if reaction in ("accepted", "different") and not proposal_id:
+            return _error(f"{reaction} needs a proposal_id")
+
+        def react():
+            try:
+                return self.stuck.react(
+                    identity.user_uuid, episode_id, request_uuid=request_id,
+                    generation=generation, reaction=reaction,
+                    proposal_id=proposal_id)
+            except ValueError as e:
+                message = str(e)
+                status = 404 if "not found" in message else 409
+                return _error(message, status=status)
+        result = await asyncio.to_thread(react)
+        if isinstance(result, web.Response):
+            return result
+        episode, outcome = result
+        if outcome == "regenerate":
+            self.stuck_turns.ensure(identity.user_uuid, episode)
+        payload = {"ok": True, "episode": episode, "outcome": outcome}
+        if episode.get("execution"):
+            payload["execution"] = episode["execution"]
+        return web.json_response(payload)
+
     async def _api_council(self, request: web.Request) -> web.Response:
         """the presence strip's data source: who lives in this deployment,
         as THIS user knows them. roster = enabled ∩ authored cards (the same
@@ -1245,6 +1404,21 @@ def _client_ip(request: web.Request) -> str:
 
 # the PATCH body's whole vocabulary (section 4); anything else is a 400
 _TASK_PATCH_KEYS = frozenset({"next_action", "scheduled", "status", "set_aside"})
+# the stuck routes' bodies (STUCK_MODE_DESIGN.md 5.1); anything else is a 400
+_STUCK_OPEN_KEYS = frozenset({"surface", "request_id", "task_id"})
+_STUCK_REACT_KEYS = frozenset({"reaction", "generation", "request_id",
+                               "proposal_id"})
+
+
+def _uuid_field(value) -> Optional[str]:
+    """a lowercase uuid string, or None when the value isn't one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        uuid_mod.UUID(value)
+    except ValueError:
+        return None
+    return value.lower()
 
 
 def _error(message: str, status: int = 400) -> web.Response:

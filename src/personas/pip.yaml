@@ -29,6 +29,9 @@ tools:
   - update_commitment
   - freeze_cycle
   - change_scope
+  # the stuck turn (docs/STUCK_MODE_DESIGN.md 5.3): pip as the house's
+  # background focus specialist, met or not
+  - propose_unstuck
 speak_when:
   - lane_relevant
   - directly_addressed

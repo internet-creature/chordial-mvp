@@ -749,6 +749,55 @@ class PromptService:
         self._log_request(user_name, "scheduled", request)
         return request
 
+    async def build_stuck_request(
+        self,
+        conversation_history: List[Event],
+        user_name: Optional[str],
+        user_uuid: Optional[str],
+        user_timezone: str,
+        user_pronouns: Optional[str] = None,
+        tools: Optional[List[ToolDef]] = None,
+        ambient_context: Optional[str] = None,
+        rejected_kinds=(),
+    ) -> AIRequest:
+        """the "i'm stuck" turn (docs/STUCK_MODE_DESIGN.md 5.2): history
+        is stable, the synthetic 'now' turn carries the ambient block (the
+        digest plus the stuck brief) and the one instruction - call
+        propose_unstuck once, write nothing. shaped like the scheduled
+        request; the instruction copy lives in src/services/stuck.py."""
+        from src.services import stuck
+
+        system = await self._build_system_blocks(
+            user_name, user_uuid, user_timezone, user_pronouns
+        )
+        messages, leftover_actions = self._render_history(conversation_history, user_timezone)
+        now_line = self._now_line(
+            user_timezone, self._last_user_timestamp(conversation_history), user_name
+        )
+        who = user_name or "them"
+        actions_block = (
+            f"{self._action_block(leftover_actions, user_timezone)}\n" if leftover_actions else ""
+        )
+        ambient_block = f"[{ambient_context}]\n" if ambient_context else ""
+        messages.append(ChatTurn(
+            role="user",
+            content=(
+                f"[current time - {now_line}]\n"
+                f"{actions_block}"
+                f"{ambient_block}"
+                + stuck.instruction(who, rejected_kinds)
+            ),
+        ))
+        request = AIRequest(
+            system=system,
+            messages=messages,
+            tools=tools or [],
+            max_tokens=Config.CHAT_MAX_TOKENS,
+            effort=Config.CHAT_EFFORT,
+        )
+        self._log_request(user_name, "stuck", request)
+        return request
+
     # --- logging -----------------------------------------------------------
 
     def _log_request(self, user_name: Optional[str], prompt_type: str, request: AIRequest):

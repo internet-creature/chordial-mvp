@@ -31,6 +31,13 @@ from src.personas import PersonaCard
 from src.services.prompt_service import PromptService
 from src.services.tools import ToolRegistry
 
+# the stuck turn (docs/STUCK_MODE_DESIGN.md 5.3): the tools it may see,
+# and the briefing extras that ride into the tool context
+STUCK_TOOLS = frozenset({"propose_unstuck", "search_memories"})
+STUCK_CONTEXT_KEYS = ("stuck_episode_id", "stuck_generation",
+                      "stuck_rejected_kinds")
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +83,21 @@ class HelperAgent:
                 posture_detail=briefing.extras.get("posture_detail"),
             )
             turn_kind = "scheduled"
+        elif briefing.kind == "stuck":
+            # the "i'm stuck" turn (docs/STUCK_MODE_DESIGN.md 5.2): tool
+            # output only, so the model sees just the tools that turn needs
+            request = await self.prompts.build_stuck_request(
+                conversation_history=history,
+                user_name=user_name,
+                user_uuid=user_uuid,
+                user_timezone=user_timezone,
+                user_pronouns=user_pronouns,
+                tools=[t for t in self.registry.definitions()
+                       if t.name in STUCK_TOOLS],
+                ambient_context=briefing.ambient_context,
+                rejected_kinds=briefing.extras.get("stuck_rejected_kinds") or (),
+            )
+            turn_kind = "stuck"
         else:
             request = await self.prompts.build_conversation_request(
                 conversation_history=history,
@@ -103,7 +125,10 @@ class HelperAgent:
                 # where this reply will land. scope-sensitive tools (web_login
                 # mints bearer credentials!) must know a group is listening.
                 # user_id is the identity-split thread: tools act for the USER
-                metadata={"scope": briefing.scope, USER_ID_KEY: user_uuid},
+                metadata={"scope": briefing.scope, USER_ID_KEY: user_uuid,
+                          # the stuck turn's episode rides to its one tool
+                          **{k: briefing.extras[k] for k in STUCK_CONTEXT_KEYS
+                             if k in briefing.extras}},
             ),
             platform=briefing.platform,
             turn_kind=turn_kind,

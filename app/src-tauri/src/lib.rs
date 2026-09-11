@@ -7,7 +7,7 @@ mod updater;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, RunEvent, WindowEvent,
+    Emitter, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_window_state::StateFlags;
 
@@ -21,6 +21,25 @@ fn show_companion(app: tauri::AppHandle) -> Result<(), String> {
     deer.unminimize().map_err(|e| e.to_string())?;
     deer.show().map_err(|e| e.to_string())?;
     deer.set_focus().map_err(|e| e.to_string())
+}
+
+/// The companion (and the tray) raising chordial itself: the stuck page
+/// lives in the main window (docs/STUCK_MODE_DESIGN.md section 1).
+#[tauri::command]
+fn show_main(app: tauri::AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or("Main window is unavailable")?;
+    main.unminimize().map_err(|e| e.to_string())?;
+    main.show().map_err(|e| e.to_string())?;
+    main.set_focus().map_err(|e| e.to_string())
+}
+
+/// The tray's press: raise the main window and tell it. The frontend
+/// listens for `chordial:stuck` and opens the page.
+#[derive(Clone, serde::Serialize)]
+struct StuckPress {
+    surface: &'static str,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -54,6 +73,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             show_companion,
+            show_main,
             credentials::credential_get,
             credentials::credential_set,
             credentials::credential_clear,
@@ -77,6 +97,9 @@ pub fn run() {
 
             // the tray: chordial lives in the corner of the day, so the
             // deer can be tucked away and called back without the dock
+            let stuck = MenuItem::with_id(
+                app, "stuck", "I’m stuck", true, None::<&str>,
+            )?;
             let show = MenuItem::with_id(
                 app, "show-deer", "Show companion", true,
                 None::<&str>,
@@ -91,9 +114,13 @@ pub fn run() {
             let quit = MenuItem::with_id(
                 app, "quit", "quit chordial", true, None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&show, &hide, &check, &quit])?;
+            let menu = Menu::with_items(app, &[&stuck, &show, &hide, &check, &quit])?;
             let mut tray = TrayIconBuilder::new().menu(&menu).on_menu_event(
                 |app, event| match event.id.as_ref() {
+                    "stuck" => {
+                        let _ = show_main(app.clone());
+                        let _ = app.emit("chordial:stuck", StuckPress { surface: "tray" });
+                    }
                     "show-deer" => {
                         let _ = show_companion(app.clone());
                     }

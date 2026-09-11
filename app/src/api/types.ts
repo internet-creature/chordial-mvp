@@ -241,3 +241,80 @@ export interface TodayPayload {
   };
   server_time: string;
 }
+
+// --- stuck mode (docs/STUCK_MODE_DESIGN.md §5.1) ----------------------------
+
+export type StuckSurface = "companion" | "home" | "tray" | "room" | "telegram";
+export type StuckKind =
+  | "step" | "switch" | "thread" | "body" | "sound" | "rest" | "company";
+export type StuckAction =
+  | "start_task" | "pause_and_away" | "body_here" | "rest_here"
+  | "start_company" | "point_to_sound";
+export type StuckStatus =
+  | "thinking" | "ready" | "fallback" | "failed" | "accepted" | "rested" | "closed";
+export type StuckReaction = "accepted" | "different" | "too_much" | "closed";
+
+export interface StuckProposal {
+  proposal_id: string;
+  generation: number;
+  source: "model" | "fallback";
+  kind: StuckKind;
+  action: StuckAction;
+  line: string;
+  enough: string;
+  minutes: number | null;
+  why: string | null;
+  why_register: "matters" | "soft";
+  thing: { task_id?: number; plan_id?: number; label?: string } | null;
+  prepared_step: { task_id: number; next_action: string } | null;
+  rationale_codes: string[];
+}
+
+/** the typed handoff the sidecar deduplicates on (§4) */
+export interface StuckExecution {
+  execution_id: string;
+  episode_id: string;
+  action: StuckAction;
+  kind: StuckKind;
+  task_id: number | null;
+  next_action: string | null;
+  minutes: number | null;
+  line: string;
+}
+
+export interface StuckEpisode {
+  episode_id: string;
+  status: StuckStatus;
+  generation: number;
+  surface: StuckSurface;
+  task_id: number | null;
+  source: "model" | "fallback" | null;
+  /** the current generation's proposals, in the turn's order */
+  proposals: StuckProposal[];
+  rejected_proposal_ids: string[];
+  rejected_kinds: StuckKind[];
+  exhausted: boolean;
+  accepted_proposal_id: string | null;
+  execution: StuckExecution | null;
+  error: string | null;
+  opened_at: string | null;
+  ready_at: string | null;
+  closed_at: string | null;
+}
+
+export type StuckOutcome =
+  | "replay" | "recorded" | "regenerate" | "exhausted"
+  | "accepted" | "rested" | "closed";
+
+export interface StuckOpenResult {
+  ok: boolean;
+  episode: StuckEpisode;
+  replayed: boolean;
+}
+
+export interface StuckReactResult {
+  ok: boolean;
+  episode: StuckEpisode;
+  outcome: StuckOutcome;
+  execution?: StuckExecution;
+}

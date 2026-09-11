@@ -26,6 +26,21 @@ export async function showCompanion(): Promise<void> {
   await invoke("show_companion");
 }
 
+/** the companion raising chordial itself (the stuck page lives there).
+ * in a browser preview the companion is a popup: focus its opener. */
+export async function showMain(): Promise<void> {
+  if (!inTauri()) {
+    const opener = window.opener as Window | null;
+    if (opener && !opener.closed) {
+      opener.focus();
+      return;
+    }
+    window.open("/", "chordial-main")?.focus();
+    return;
+  }
+  await invoke("show_main");
+}
+
 /** the native title bar and controls follow the chosen theme */
 export async function setNativeTheme(theme: "dark" | "light"): Promise<void> {
   if (!inTauri()) return;

@@ -1045,3 +1045,37 @@
   font-family: var(--mono);
   font-weight: 500;
 }
+
+
+/* the press (docs/STUCK_MODE_DESIGN.md section 1): the one object in the
+   den that isn't a task, under the bubble, above everything else; and its
+   quiet form in the bar beside pause. never hidden by a running clock. */
+.deer-stuck {
+  width: 100%;
+  flex-shrink: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.deer-stuck:hover,
+.deer-stuck:focus-visible {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.deer-bar-stuck {
+  flex-shrink: 0;
+  padding: 0 6px;
+  color: var(--accent-ink);
+  font-size: 11px;
+}
+
+.deer-bar-stuck:hover,
+.deer-bar-stuck:focus-visible {
+  color: var(--ink);
+}

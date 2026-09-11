@@ -17,6 +17,7 @@ import type { CycleRoomHandle } from "./Room";
 import CyclePanel from "./CyclePanel";
 import { useToday } from "../lib/useToday";
 import TaskSyncStatus from "./TaskSyncStatus";
+import { STUCK_COPY } from "../lib/stuck";
 
 interface Props {
   token: string;
@@ -26,6 +27,8 @@ interface Props {
   onEnterRoom: () => void;
   onEnterCycleRoom: (handle: CycleRoomHandle) => void;
   onOpenArchive: (room: ArchivedRoom) => void;
+  /** the press (docs/STUCK_MODE_DESIGN.md §1) */
+  onStuck: () => void;
   onAuthLost: () => void;
 }
 
@@ -87,6 +90,7 @@ export default function Home({
   onEnterRoom,
   onEnterCycleRoom,
   onOpenArchive,
+  onStuck,
   onAuthLost,
 }: Props) {
   const {
@@ -182,11 +186,20 @@ export default function Home({
   return (
     <div className="home">
       <header className="home-head">
-        <h1>
-          {greeting(new Date())}
-          {name ? `, ${name}` : ""}
-        </h1>
-        <p className="home-date">{dateLine}</p>
+        <div className="home-head-text">
+          <h1>
+            {greeting(new Date())}
+            {name ? `, ${name}` : ""}
+          </h1>
+          <p className="home-date">{dateLine}</p>
+        </div>
+        <button
+          className="home-stuck"
+          onClick={onStuck}
+          title={STUCK_COPY.buttonTitle}
+        >
+          {STUCK_COPY.button}
+        </button>
       </header>
 
       <button

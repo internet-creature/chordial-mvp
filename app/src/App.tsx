@@ -4,6 +4,7 @@ import PresenceRail from "./components/PresenceRail";
 import Home from "./components/Home";
 import Room, { type CycleRoomHandle } from "./components/Room";
 import ArchiveRoom from "./components/ArchiveRoom";
+import StuckPage from "./components/StuckPage";
 import { fetchCouncil, fetchRoomCurrent, isAuthError } from "./api/client";
 import { fetchSidecarState } from "./api/sidecar";
 import { RoomSocket, SocketBus, type SocketStatus } from "./api/ws";
@@ -11,8 +12,17 @@ import type { ArchivedRoom, CouncilMember } from "./api/types";
 import { classifyForNudge } from "./lib/unread";
 import { clearSession, loadSession, storeSession } from "./lib/session";
 import { announceTasksChanged } from "./lib/taskSync";
+import { inTauri } from "./lib/tauriWindow";
+import {
+  makeRequest,
+  readStuckRequest,
+  STUCK_REQUEST_KEY,
+  type StuckRequest,
+} from "./lib/stuck";
+import type { StuckSurface } from "./api/types";
+import { listen } from "@tauri-apps/api/event";
 
-type View = "home" | "room" | "archive" | "cycle";
+type View = "home" | "room" | "archive" | "cycle" | "stuck";
 
 // heartbeat every 30s; the server counts ~3 missed beats as away
 const PRESENCE_BEAT_MS = 30_000;
@@ -38,6 +48,9 @@ export default function App() {
   const [cycleRoom, setCycleRoom] = useState<CycleRoomHandle | null>(null);
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("connecting");
   const [unread, setUnread] = useState(0);
+  // the press behind the stuck page: from Home directly, from the companion
+  // or the tray through localStorage (docs/STUCK_MODE_DESIGN.md §1)
+  const [stuckRequest, setStuckRequest] = useState<StuckRequest | null>(null);
 
   const busRef = useRef<SocketBus | null>(null);
   if (!busRef.current) busRef.current = new SocketBus();
@@ -92,6 +105,43 @@ export default function App() {
     setCouncil([]);
     setView("home");
   }, []);
+
+  const openStuckPage = useCallback((request: StuckRequest) => {
+    setStuckRequest(request);
+    setView("stuck");
+  }, []);
+
+  // a press from another window: the companion writes the request and
+  // raises this window; the storage event delivers it (or mount does, when
+  // the main window wasn't up yet). the tray comes through a shell event.
+  useEffect(() => {
+    const pending = readStuckRequest(window.localStorage);
+    if (pending) openStuckPage(pending);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STUCK_REQUEST_KEY || !e.newValue) return;
+      const request = readStuckRequest(window.localStorage);
+      if (request) openStuckPage(request);
+    };
+    window.addEventListener("storage", onStorage);
+    let unlisten: (() => void) | undefined;
+    let gone = false;
+    if (inTauri()) {
+      void listen<{ surface?: string }>("chordial:stuck", (event) => {
+        const surface = (event.payload?.surface ?? "tray") as StuckSurface;
+        openStuckPage(makeRequest(surface));
+      })
+        .then((un) => {
+          if (gone) un();
+          else unlisten = un;
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      gone = true;
+      window.removeEventListener("storage", onStorage);
+      unlisten?.();
+    };
+  }, [openStuckPage]);
 
   const refreshCouncil = useCallback(() => {
     if (!token) return;
@@ -207,6 +257,19 @@ export default function App() {
             onOpenArchive={(room) => {
               setArchiveRoom(room);
               setView("archive");
+            }}
+            onStuck={() => openStuckPage(makeRequest("home"))}
+            onAuthLost={onAuthLost}
+          />
+        )}
+        {view === "stuck" && stuckRequest && (
+          <StuckPage
+            key={stuckRequest.request_id}
+            token={token}
+            request={stuckRequest}
+            onClose={() => {
+              setStuckRequest(null);
+              setView("home");
             }}
             onAuthLost={onAuthLost}
           />

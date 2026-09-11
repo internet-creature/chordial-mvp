@@ -15,6 +15,11 @@ import type {
   TaskPatch,
   TaskRow,
   TodayPayload,
+  StuckEpisode,
+  StuckOpenResult,
+  StuckReaction,
+  StuckReactResult,
+  StuckSurface,
 } from "./types";
 import { announceTasksChanged } from "../lib/taskSync";
 
@@ -187,6 +192,52 @@ export function patchTask(
     token,
     body: JSON.stringify(patch),
   }).then(taskChanged);
+}
+
+// --- stuck mode (docs/STUCK_MODE_DESIGN.md §5.1) ----------------------------
+// one press opens an episode (idempotent per request_id), the page polls it
+// while the house thinks, reactions move it. generating proposals changes
+// nothing; accepting may write one next_action - so only that announces.
+
+export function openStuck(
+  token: string,
+  body: { surface: StuckSurface; request_id: string; task_id?: number | null },
+): Promise<StuckOpenResult> {
+  return request<StuckOpenResult>("/api/v1/stuck", {
+    method: "POST",
+    token,
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchStuck(
+  token: string,
+  episodeId: string,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; episode: StuckEpisode }> {
+  return request<{ ok: boolean; episode: StuckEpisode }>(
+    `/api/v1/stuck/${episodeId}`,
+    { token, signal, cache: "no-store" },
+  );
+}
+
+export function reactStuck(
+  token: string,
+  episodeId: string,
+  body: {
+    reaction: StuckReaction;
+    generation: number;
+    request_id: string;
+    proposal_id?: string;
+  },
+): Promise<StuckReactResult> {
+  return request<StuckReactResult>(`/api/v1/stuck/${episodeId}/react`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(body),
+  }).then((result) =>
+    result.outcome === "accepted" ? taskChanged(result) : result,
+  );
 }
 
 function taskChanged<T>(result: T): T {

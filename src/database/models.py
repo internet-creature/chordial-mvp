@@ -1122,6 +1122,10 @@ class StuckEpisode(Base):
     generation = Column(Integer, nullable=False, default=1)
     proposals = Column(JSON, nullable=True)         # list of proposal dicts
     error = Column(String, nullable=True)           # why `failed`, if it did
+    # the ladder ran out of fresh kinds (or a gen-2 card was fully turned
+    # down): the client's cue to show the rest branch; the card stays
+    exhausted = Column(Boolean, nullable=False, default=False,
+                       server_default=false())
     accepted_proposal_id = Column(String, nullable=True)
     accepted_kind = Column(String, nullable=True)
     execution_id = Column(String, nullable=True)    # minted once, at accept

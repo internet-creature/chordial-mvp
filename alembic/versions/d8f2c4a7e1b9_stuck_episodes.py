@@ -36,6 +36,8 @@ def upgrade() -> None:
         sa.Column('generation', sa.Integer(), nullable=False),
         sa.Column('proposals', sa.JSON(), nullable=True),
         sa.Column('error', sa.String(), nullable=True),
+        sa.Column('exhausted', sa.Boolean(), nullable=False,
+                  server_default=sa.false()),
         sa.Column('accepted_proposal_id', sa.String(), nullable=True),
         sa.Column('accepted_kind', sa.String(), nullable=True),
         sa.Column('execution_id', sa.String(), nullable=True),

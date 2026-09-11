@@ -419,6 +419,7 @@ class ChordialContext:
                 "stuck_rejected_kinds": list(
                     stimulus.extras.get("stuck_rejected_kinds") or []),
                 "stuck_surface": stimulus.extras.get("stuck_surface") or "companion",
+                "stuck_task_id": stimulus.extras.get("stuck_task_id"),
             }
 
         ambient = self._compose_ambient(
@@ -466,7 +467,8 @@ class ChordialContext:
             from src.services import stuck
             recent = stuck.StuckStore().recent_summaries(
                 user_uuid, exclude_uuid=extras.get("stuck_episode_id"))
-            ev = stuck.gather(user_uuid, today=today, recent=recent)
+            ev = stuck.gather(user_uuid, today=today, recent=recent,
+                              focus_task_id=extras.get("stuck_task_id"))
             return stuck.render_brief(
                 ev, surface=extras.get("stuck_surface") or "companion",
                 rejected_kinds=extras.get("stuck_rejected_kinds") or ())

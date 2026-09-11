@@ -118,6 +118,23 @@ def test_open_replays_the_same_episode_for_the_same_request(env):
     _run(_with_client(scenario))
 
 
+def test_a_poll_resumes_a_thinking_episode_with_no_runner(env):
+    """the restart shape: the row exists, no runner is on it (we drop the
+    runner by hand); the next poll makes sure one is."""
+    token = _token()
+
+    async def scenario(client, service):
+        ep = (await (await _open(client, token)).json())["episode"]
+        for t in list(service.stuck_turns._running.values()):
+            t.cancel()
+        service.stuck_turns._running.clear()
+        # a replayed open on the same request also resumes
+        card = await _settled(client, token, ep["episode_id"])
+        assert card["status"] == stuck.FALLBACK
+        assert service.stuck_turns._running == {}
+    _run(_with_client(scenario))
+
+
 def test_open_validates_its_body(env):
     token = _token()
 

@@ -125,7 +125,7 @@ def test_the_tool_is_inert_outside_a_turn_and_after_settling(db):
     assert run(_propose_unstuck(proposals(tid), bare)).startswith("error:")
     store = stuck.StuckStore()
     ep, _ = store.open(U1, request_uuid=str(uuid_mod.uuid4()), surface="companion")
-    store.settle(ep["episode_id"], 1, stuck.fallback(stuck.gather(U1)), "fallback")
+    store.settle(ep["episode_id"], 1, stuck.fallback(stuck.gather(U1))[0], "fallback")
     reply = run(_propose_unstuck(proposals(tid), context(ep)))
     assert "already settled" in reply
     assert store.get(U1, ep["episode_id"])["status"] == stuck.FALLBACK
@@ -185,7 +185,8 @@ def test_the_director_falls_back_to_the_chair_without_pip():
 def test_the_briefer_builds_a_stuck_briefing_with_the_brief(db):
     tid = task(db, "stuck-mode design", next_action="one sentence")
     ctx = ChordialContext(user_manager=UserManager(), agenda_service=WorkspaceAgenda())
-    briefing = run(ctx.enrich(stuck_stimulus(stuck_rejected_kinds=["body"]),
+    briefing = run(ctx.enrich(stuck_stimulus(stuck_rejected_kinds=["body"],
+                                             stuck_task_id=tid),
                               ScriptLine(speaker="pip")))
     assert briefing.kind == "stuck"
     assert briefing.extras["stuck_episode_id"] == "ep-1"
@@ -194,5 +195,6 @@ def test_the_briefer_builds_a_stuck_briefing_with_the_brief(db):
     ambient = briefing.ambient_context
     assert 'they pressed "i\'m stuck" from the companion' in ambient
     assert f'#{tid} "stuck-mode design"' in ambient
+    assert f'pressed it from the row of #{tid}' in ambient
     assert "(do not offer these kinds again): body" in ambient
     assert "checkin_posture" not in briefing.extras

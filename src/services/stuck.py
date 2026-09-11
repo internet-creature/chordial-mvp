@@ -18,13 +18,14 @@ from __future__ import annotations
 import logging
 import uuid as uuid_mod
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Iterable, Optional
 
 from config import Config
 from src.database.database import get_db
 from src.database.models import StuckEpisode, StuckReaction, Task
-from src.services.scorecard import _late_seconds
+from src.services.scorecard import _overlap
+from src.services.workspace import vocab
 from src.utils.timezone_utils import is_within_quiet_hours, utc_now
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,12 @@ FALLBACK_COPY = {
     "rest_sleep_enough": "enough = you closed this",
     "rest_here_line": "close the list for now. nothing on it changes.",
     "rest_here_enough": "enough = you closed this",
+    "thread_line": 'reopen "{label}" exactly where you stopped. just look.',
+    "thread_enough": "enough = you can see where you were",
+    "switch_line": 'a different thing: open "{title}" instead. two minutes.',
+    "switch_enough": "enough = you know what it's about again",
+    "sound_line": "put on something without words - rain, or a playlist you already know.",
+    "sound_enough": "enough = it's playing",
 }
 
 
@@ -120,6 +127,9 @@ class Evidence:
     tasks: list = field(default_factory=list)   # dicts, see _task_row
     plans: dict = field(default_factory=dict)   # plan_id -> {title, why}
     recent: list = field(default_factory=list)  # recent episode summaries
+    last_run_task_id: Optional[int] = None      # for the thread kind
+    last_run_label: Optional[str] = None
+    focus_task_id: Optional[int] = None         # pressed from a task's row
 
     @property
     def task_ids(self) -> set:
@@ -148,7 +158,8 @@ class Evidence:
         return codes
 
 
-def gather(user_uuid: str, today=None, recent: Iterable[dict] = ()) -> Evidence:
+def gather(user_uuid: str, today=None, recent: Iterable[dict] = (),
+           focus_task_id: Optional[int] = None) -> Evidence:
     """the evidence, from the day snapshot (dogfood section 5.1) plus the
     workspace. `today` is an already-computed FocusDay when the caller has
     one (the enrich path reads exactly one snapshot); otherwise read it
@@ -168,6 +179,9 @@ def gather(user_uuid: str, today=None, recent: Iterable[dict] = ()) -> Evidence:
     elif fd.frozen is not None:
         ev.clock, ev.clock_label = "paused", fd.frozen.label
     ev.late_last_night_seconds = _late_seconds_around(fd, user_uuid)
+    if fd.last_run is not None:
+        ev.last_run_task_id = fd.last_run.task_id
+        ev.last_run_label = fd.last_run.label
 
     store = get_store()
     by_id = {t["id"]: t for t in store.list_tasks(user_uuid)}
@@ -184,6 +198,9 @@ def gather(user_uuid: str, today=None, recent: Iterable[dict] = ()) -> Evidence:
             continue
         ev.plans[plan_id] = {"title": plan.get("title"), "why": plan.get("why")}
     ev.recent = list(recent)
+    # the row the button was pressed from, when it's still on the list
+    if focus_task_id is not None and focus_task_id in ev.task_ids:
+        ev.focus_task_id = focus_task_id
     return ev
 
 
@@ -200,11 +217,18 @@ def _task_row(t: dict, planned: dict, signals) -> dict:
     }
 
 
+LATE_WINDOW_START = time(23, 0)
+LATE_WINDOW_END = time(6, 0)
+
+
 def _late_seconds_around(fd, user_uuid: str) -> int:
-    """seconds of yesterday's and today's runs inside [23:00, 06:00) local -
-    the one piece of last night the afternoon should know about. guarded:
-    yesterday's read failing costs the code, never the episode."""
+    """seconds of work inside LAST NIGHT only - the single window from
+    yesterday 23:00 to today 06:00 local. a 2am run the night before last
+    is not last night (sol, #89). guarded: yesterday's read failing costs
+    the code, never the episode."""
     from src.services import focus_day
+    window_start = datetime.combine(fd.day - timedelta(days=1), LATE_WINDOW_START)
+    window_end = datetime.combine(fd.day, LATE_WINDOW_END)
     runs = list(fd.runs)
     try:
         runs += list(focus_day.snapshot(user_uuid, fd.day - timedelta(days=1)).runs)
@@ -214,7 +238,7 @@ def _late_seconds_around(fd, user_uuid: str) -> int:
     for r in runs:
         end = r.ended_at
         start = end - timedelta(seconds=max(0, int(r.seconds or 0)))
-        total += _late_seconds(start, end)
+        total += _overlap(start, end, window_start, window_end)
     return total
 
 
@@ -247,6 +271,12 @@ def render_brief(ev: Evidence, surface: str = "companion",
         lines.append(f"hours since anything ran [evidence id: {CODE_HOURS_SINCE_LAST_RUN}]")
     if CODE_NO_RUNS_TODAY in ev.codes:
         lines.append(f"no runs today [evidence id: {CODE_NO_RUNS_TODAY}]")
+    if ev.focus_task_id is not None:
+        focus = next((t for t in ev.tasks if t["id"] == ev.focus_task_id), None)
+        if focus is not None:
+            lines.append(f'they pressed it from the row of #{focus["id"]} '
+                         f'"{focus["title"]}" - that is the task they mean; '
+                         f"start there unless the evidence says otherwise.")
     if ev.tasks:
         lines.append("on today's list (task ids are the ONLY ids you may use):")
         for t in ev.tasks:
@@ -429,6 +459,9 @@ def validate(raw, ev: Evidence, rejected_kinds: Iterable[str] = ()) -> list[dict
                 "next_action": _text(step.get("next_action"), NEXT_ACTION_CAP,
                                      f"proposal {i} prepared_step.next_action"),
             }
+        if action == "rest_here" and p["prepared_step"] is not None:
+            raise ProposalError(f"proposal {i}: rest changes nothing - no "
+                                f"prepared_step on rest_here")
         if action == "start_task":
             if not p["thing"] or "task_id" not in p["thing"]:
                 raise ProposalError(f"proposal {i}: start_task needs thing.task_id")
@@ -460,18 +493,35 @@ def _int(value, name: str) -> int:
 
 # --- the fallback ladder (section 6) ----------------------------------------
 
-def fallback(ev: Evidence) -> list[dict]:
-    """three kinds, deterministic, model-free. the slot for a step becomes
-    company when no task can carry one; body reads hours-since; rest reads
-    the night. copy from FALLBACK_COPY, never generated."""
+def fallback(ev: Evidence, exclude: Iterable[str] = ()) -> tuple[list[dict], bool]:
+    """(proposals, exhausted): up to three kinds not in `exclude`, in the
+    ladder's order - step (or company when no task can carry one), body,
+    rest, then the reserves: company, thread, switch, sound. deterministic,
+    model-free, copy from FALLBACK_COPY. fewer than three fresh kinds means
+    the ladder is out (sol, #89): the caller marks the episode exhausted
+    rather than shipping a thin card as if it were whole."""
+    excluded = {k for k in exclude if k}
+    out: list[dict] = []
+    seen: set = set()
+    for cand in _candidates(ev):
+        if cand is None or cand["kind"] in excluded or cand["kind"] in seen:
+            continue
+        out.append(cand)
+        seen.add(cand["kind"])
+        if len(out) == PROPOSALS_PER_GENERATION:
+            break
+    return out, len(out) < PROPOSALS_PER_GENERATION
+
+
+def _candidates(ev: Evidence):
     c = FALLBACK_COPY
-    first = _fallback_step(ev)
-    if first is None:
-        first = {"kind": "company", "action": "start_company",
-                 "line": c["company_line"], "enough": c["company_enough"],
-                 "minutes": 5, "why": None, "why_register": "matters",
-                 "thing": None, "prepared_step": None,
-                 "rationale_codes": [CODE_NO_SUITABLE_TASK] if not ev.tasks else []}
+    step = _fallback_step(ev)
+    company = {"kind": "company", "action": "start_company",
+               "line": c["company_line"], "enough": c["company_enough"],
+               "minutes": 5, "why": None, "why_register": "matters",
+               "thing": None, "prepared_step": None,
+               "rationale_codes": [CODE_NO_SUITABLE_TASK] if not ev.tasks else []}
+    yield step if step is not None else company
     hours_away = (CODE_HOURS_SINCE_LAST_RUN in ev.codes
                   or (CODE_NO_RUNS_TODAY in ev.codes and ev.now_local.hour >= 12))
     body = ({"kind": "body", "action": "pause_and_away",
@@ -486,35 +536,88 @@ def fallback(ev: Evidence) -> list[dict]:
                  "rationale_codes": [x for x in (CODE_HOURS_SINCE_LAST_RUN,
                                                  CODE_NO_RUNS_TODAY)
                                      if x in ev.codes]})
+    yield body
     sleepy = [x for x in (CODE_PAST_QUIET_HOURS, CODE_LATE_LAST_NIGHT)
               if x in ev.codes]
-    rest = {"kind": "rest", "action": "rest_here",
-            "line": c["rest_sleep_line"] if sleepy else c["rest_here_line"],
-            "enough": c["rest_sleep_enough"] if sleepy else c["rest_here_enough"],
-            "minutes": None, "why": None, "why_register": "matters",
-            "thing": None, "prepared_step": None, "rationale_codes": sleepy}
-    return [first, body, rest]
+    yield {"kind": "rest", "action": "rest_here",
+           "line": c["rest_sleep_line"] if sleepy else c["rest_here_line"],
+           "enough": c["rest_sleep_enough"] if sleepy else c["rest_here_enough"],
+           "minutes": None, "why": None, "why_register": "matters",
+           "thing": None, "prepared_step": None, "rationale_codes": sleepy}
+    # the reserves, for a second generation
+    yield company
+    yield _fallback_thread(ev)
+    yield _fallback_switch(ev, step)
+    yield {"kind": "sound", "action": "point_to_sound",
+           "line": c["sound_line"], "enough": c["sound_enough"],
+           "minutes": None, "why": None, "why_register": "matters",
+           "thing": None, "prepared_step": None, "rationale_codes": []}
 
 
 def _fallback_step(ev: Evidence) -> Optional[dict]:
+    """the pressed row first (sol, #89), then a flagged task with a first
+    piece, then the smallest untouched task."""
     c = FALLBACK_COPY
+    focus = next((t for t in ev.tasks if t["id"] == ev.focus_task_id), None) \
+        if ev.focus_task_id is not None else None
     flagged = [t for t in ev.tasks if t.get("signals") and t.get("next_action")]
-    if flagged:
+    if focus is not None and focus.get("next_action"):
+        t = focus
+    elif focus is None and flagged:
         t = flagged[0]
-        return {"kind": "step", "action": "start_task", "line": t["next_action"],
-                "enough": c["step_flagged_enough"], "minutes": 2, "why": None,
-                "why_register": "matters", "thing": {"task_id": t["id"]},
-                "prepared_step": {"task_id": t["id"],
-                                  "next_action": t["next_action"]},
-                "rationale_codes": []}
-    untouched = [t for t in ev.tasks if not t.get("banked_seconds")]
-    pool = untouched or ev.tasks
-    if not pool:
-        return None
-    t = min(pool, key=lambda x: (x.get("pom_estimate") or 99, x["id"]))
+    else:
+        t = focus
+    if t is not None:
+        if t.get("next_action"):
+            return {"kind": "step", "action": "start_task", "line": t["next_action"],
+                    "enough": c["step_flagged_enough"], "minutes": 2, "why": None,
+                    "why_register": "matters", "thing": {"task_id": t["id"]},
+                    "prepared_step": {"task_id": t["id"],
+                                      "next_action": t["next_action"]},
+                    "rationale_codes": []}
+    else:
+        untouched = [x for x in ev.tasks if not x.get("banked_seconds")]
+        pool = untouched or ev.tasks
+        if not pool:
+            return None
+        t = min(pool, key=lambda x: (x.get("pom_estimate") or 99, x["id"]))
     line = c["step_open_line"].format(title=t["title"])
     return {"kind": "step", "action": "start_task", "line": line,
             "enough": c["step_open_enough"], "minutes": 2, "why": None,
+            "why_register": "matters", "thing": {"task_id": t["id"]},
+            "prepared_step": {"task_id": t["id"],
+                              "next_action": t.get("next_action") or line[:NEXT_ACTION_CAP]},
+            "rationale_codes": []}
+
+
+def _fallback_thread(ev: Evidence) -> Optional[dict]:
+    """pick up the thread: only honest when the last run was on a task
+    still on the list."""
+    if ev.last_run_task_id is None or ev.last_run_task_id not in ev.task_ids:
+        return None
+    c = FALLBACK_COPY
+    label = ev.last_run_label or next(
+        t["title"] for t in ev.tasks if t["id"] == ev.last_run_task_id)
+    line = c["thread_line"].format(label=label)
+    return {"kind": "thread", "action": "start_task", "line": line,
+            "enough": c["thread_enough"], "minutes": 2, "why": None,
+            "why_register": "matters", "thing": {"task_id": ev.last_run_task_id},
+            "prepared_step": {"task_id": ev.last_run_task_id,
+                              "next_action": line[:NEXT_ACTION_CAP]},
+            "rationale_codes": []}
+
+
+def _fallback_switch(ev: Evidence, step: Optional[dict]) -> Optional[dict]:
+    """a different thing: the smallest OTHER task, when there is one."""
+    taken = step["thing"]["task_id"] if step else None
+    others = [t for t in ev.tasks if t["id"] != taken]
+    if not others:
+        return None
+    c = FALLBACK_COPY
+    t = min(others, key=lambda x: (x.get("pom_estimate") or 99, x["id"]))
+    line = c["switch_line"].format(title=t["title"])
+    return {"kind": "switch", "action": "start_task", "line": line,
+            "enough": c["switch_enough"], "minutes": 2, "why": None,
             "why_register": "matters", "thing": {"task_id": t["id"]},
             "prepared_step": {"task_id": t["id"],
                               "next_action": t.get("next_action") or line[:NEXT_ACTION_CAP]},
@@ -605,11 +708,14 @@ class StuckStore:
     # -- the turn's writes ----------------------------------------------------
 
     def settle(self, episode_uuid: str, generation: int, proposals: list[dict],
-               source: str) -> Optional[dict]:
+               source: str, exhausted: bool = False) -> Optional[dict]:
         """the one model-facing write: proposals for THIS generation land
         only while the episode is still thinking at that generation. a
         late turn - after the fallback stood in, after the person chose -
-        is refused (None), never applied. ids are assigned here."""
+        is refused (None), never applied. the write is a CONDITIONAL update
+        on (status, generation): two writers racing (a timed-out tool
+        thread that kept running, and the ladder) can both read `thinking`,
+        but only one statement matches (sol, #89). ids are assigned here."""
         status = READY if source == "model" else FALLBACK
         with get_db() as db:
             row = db.query(StuckEpisode).filter(
@@ -622,27 +728,53 @@ class StuckStore:
             for p in proposals:
                 stamped.append({**p, "proposal_id": str(uuid_mod.uuid4()),
                                 "generation": generation, "source": source})
-            row.proposals = list(row.proposals or []) + stamped
-            row.status = status
-            if row.ready_at is None:
-                row.ready_at = utc_now()
+            updated = db.query(StuckEpisode).filter(
+                StuckEpisode.id == row.id,
+                StuckEpisode.status == THINKING,
+                StuckEpisode.generation == generation,
+            ).update({
+                StuckEpisode.proposals: list(row.proposals or []) + stamped,
+                StuckEpisode.status: status,
+                StuckEpisode.ready_at: row.ready_at or utc_now(),
+                StuckEpisode.exhausted: bool(exhausted),
+            }, synchronize_session=False)
             db.commit()
-            db.refresh(row)
-            return self._serialize(row)
+            if not updated:
+                return None
+            db.expire_all()
+            return self._serialize(db.get(StuckEpisode, row.id))
 
     def fail(self, episode_uuid: str, generation: int, error: str) -> Optional[dict]:
-        """a turn that can't even fall back (no snapshot at all). terminal."""
+        """a turn that can't even fall back (no snapshot at all). terminal;
+        conditional like settle."""
         with get_db() as db:
             row = db.query(StuckEpisode).filter(
                 StuckEpisode.episode_uuid == episode_uuid).first()
-            if row is None or row.status != THINKING or row.generation != generation:
+            if row is None:
                 return None
-            row.status = FAILED
-            row.error = error[:300]
-            row.closed_at = utc_now()
+            updated = db.query(StuckEpisode).filter(
+                StuckEpisode.id == row.id,
+                StuckEpisode.status == THINKING,
+                StuckEpisode.generation == generation,
+            ).update({StuckEpisode.status: FAILED,
+                      StuckEpisode.error: error[:300],
+                      StuckEpisode.closed_at: utc_now()},
+                     synchronize_session=False)
             db.commit()
-            db.refresh(row)
-            return self._serialize(row)
+            if not updated:
+                return None
+            db.expire_all()
+            return self._serialize(db.get(StuckEpisode, row.id))
+
+    def list_thinking(self) -> list[tuple[str, dict]]:
+        """every open episode still waiting for a card - what a restarted
+        server must resume (sol, #89): the row is the durable claim, the
+        in-memory task is only its runner."""
+        with get_db() as db:
+            rows = db.query(StuckEpisode).filter(
+                StuckEpisode.status == THINKING,
+                StuckEpisode.closed_at.is_(None)).all()
+            return [(r.user_uuid, self._serialize(r)) for r in rows]
 
     # -- reactions (5.1 transitions) ------------------------------------------
 
@@ -687,21 +819,37 @@ class StuckStore:
                 request_uuid=request_uuid, created_at=utc_now()))
             now = utc_now()
             outcome = "recorded"
+            # every transition is a CONDITIONAL update on the (status,
+            # generation) this reaction was read against: two windows
+            # reacting to the same card can both pass the checks above,
+            # but only one statement matches; the other's reaction row
+            # rolls back with it and the caller gets a conflict (sol, #89)
+            guard = [StuckEpisode.id == row.id,
+                     StuckEpisode.generation == row.generation]
             if reaction == "accepted":
-                row.status = ACCEPTED
-                row.accepted_proposal_id = chosen["proposal_id"]
-                row.accepted_kind = chosen["kind"]
-                row.execution_id = str(uuid_mod.uuid4())
-                row.closed_at = now
                 self._prepare(db, user_uuid, chosen)
+                updated = db.query(StuckEpisode).filter(
+                    *guard, StuckEpisode.status.in_(CARD_SHOWING)
+                ).update({StuckEpisode.status: ACCEPTED,
+                          StuckEpisode.accepted_proposal_id: chosen["proposal_id"],
+                          StuckEpisode.accepted_kind: chosen["kind"],
+                          StuckEpisode.execution_id: str(uuid_mod.uuid4()),
+                          StuckEpisode.closed_at: now},
+                         synchronize_session=False)
                 outcome = "accepted"
             elif reaction == "too_much":
-                row.status = RESTED
-                row.closed_at = now
+                updated = db.query(StuckEpisode).filter(
+                    *guard, StuckEpisode.status.notin_(TERMINAL)
+                ).update({StuckEpisode.status: RESTED,
+                          StuckEpisode.closed_at: now},
+                         synchronize_session=False)
                 outcome = "rested"
             elif reaction == "closed":
-                row.status = CLOSED
-                row.closed_at = now
+                updated = db.query(StuckEpisode).filter(
+                    *guard, StuckEpisode.status.notin_(TERMINAL)
+                ).update({StuckEpisode.status: CLOSED,
+                          StuckEpisode.closed_at: now},
+                         synchronize_session=False)
                 outcome = "closed"
             else:   # different
                 db.flush()
@@ -709,29 +857,57 @@ class StuckStore:
                     StuckReaction.episode_id == row.id,
                     StuckReaction.generation == row.generation,
                     StuckReaction.reaction == "different").all()}
+                updated = 1
                 if all(p.get("proposal_id") in rejected for p in current):
                     if row.generation < MAX_GENERATIONS:
-                        row.generation += 1
-                        row.status = THINKING
+                        updated = db.query(StuckEpisode).filter(
+                            *guard, StuckEpisode.status.in_(CARD_SHOWING)
+                        ).update({StuckEpisode.generation: row.generation + 1,
+                                  StuckEpisode.status: THINKING},
+                                 synchronize_session=False)
                         outcome = "regenerate"
                     else:
+                        updated = db.query(StuckEpisode).filter(
+                            *guard, StuckEpisode.status.in_(CARD_SHOWING)
+                        ).update({StuckEpisode.exhausted: True},
+                                 synchronize_session=False)
                         outcome = "exhausted"
+            if not updated:
+                db.rollback()
+                raise ValueError("the card changed under you - refresh it")
             db.commit()
-            db.refresh(row)
-            return self._serialize(row), outcome
+            db.expire_all()
+            return self._serialize(db.get(StuckEpisode, row.id)), outcome
 
     @staticmethod
     def _prepare(db, user_uuid: str, proposal: dict) -> None:
         """the accept-time preparation (section 4): the ONE next_action the
         visible action names, written in the same transaction that claims
-        the proposal. the same cap the store applies to any scope."""
-        step = proposal.get("prepared_step")
-        if not step:
+        the proposal. rest carries none, ever. the task is re-checked at
+        this moment - a card generated an hour ago may name a task that
+        another window since finished or parked (sol, #89); a stale card
+        is a conflict, never a write onto a closed task."""
+        if proposal.get("action") == "rest_here":
             return
+        step = proposal.get("prepared_step")
+        thing = proposal.get("thing") or {}
+        task_id = (step or {}).get("task_id") or thing.get("task_id")
+        if task_id is None:
+            return
+        from src.services.workspace.agenda import user_today
         task = db.query(Task).filter(Task.user_uuid == user_uuid,
-                                     Task.id == step["task_id"]).first()
+                                     Task.id == task_id).first()
         if task is None:
             raise ValueError("prepared task not found")
+        today = user_today(user_uuid)
+        if task.status not in vocab.TASK_STATUS_OPEN:
+            raise ValueError("that task was finished since the card was made "
+                             "- refresh it")
+        if task.set_aside_on is not None and task.set_aside_on >= today:
+            raise ValueError("that task was set aside since the card was made "
+                             "- refresh it")
+        if not step:
+            return
         value = " ".join(str(step["next_action"]).split())[:NEXT_ACTION_CAP].strip()
         task.next_action = value or None
         task.updated_at = utc_now()
@@ -756,18 +932,23 @@ class StuckStore:
         now = now or utc_now()
         cutoff = now - timedelta(minutes=ttl_minutes)
         with get_db() as db:
-            rows = db.query(StuckEpisode).filter(
+            # two statements, each atomic: a reaction landing between them
+            # sees closed_at set and conflicts, never a half-swept row
+            failed = db.query(StuckEpisode).filter(
                 StuckEpisode.closed_at.is_(None),
-                StuckEpisode.opened_at < cutoff).all()
-            for row in rows:
-                if row.status == THINKING:
-                    row.status = FAILED
-                    row.error = "swept while thinking"
-                else:
-                    row.status = CLOSED
-                row.closed_at = now
+                StuckEpisode.opened_at < cutoff,
+                StuckEpisode.status == THINKING,
+            ).update({StuckEpisode.status: FAILED,
+                      StuckEpisode.error: "swept while thinking",
+                      StuckEpisode.closed_at: now}, synchronize_session=False)
+            closed = db.query(StuckEpisode).filter(
+                StuckEpisode.closed_at.is_(None),
+                StuckEpisode.opened_at < cutoff,
+                StuckEpisode.status.notin_(TERMINAL),
+            ).update({StuckEpisode.status: CLOSED,
+                      StuckEpisode.closed_at: now}, synchronize_session=False)
             db.commit()
-            return len(rows)
+            return int(failed or 0) + int(closed or 0)
 
     # -- shapes ---------------------------------------------------------------
 
@@ -791,9 +972,10 @@ class StuckStore:
         rejected_kinds = list(dict.fromkeys(
             p["kind"] for p in (row.proposals or [])
             if p.get("generation", 0) < row.generation))
-        exhausted = (row.status in CARD_SHOWING and row.generation >= MAX_GENERATIONS
-                     and bool(proposals)
-                     and all(p["proposal_id"] in rejected for p in proposals))
+        exhausted = bool(row.exhausted) or (
+            row.status in CARD_SHOWING and row.generation >= MAX_GENERATIONS
+            and bool(proposals)
+            and all(p["proposal_id"] in rejected for p in proposals))
         accepted = next((p for p in (row.proposals or [])
                          if p.get("proposal_id") == row.accepted_proposal_id), None)
         return {

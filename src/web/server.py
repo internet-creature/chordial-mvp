@@ -284,6 +284,12 @@ class WebService:
     # section 5.1).
 
     async def _start_stuck_sweep(self, _app) -> None:
+        # a restart between "episode committed" and "turn spawned" left a
+        # thinking row with no runner: the row is the claim, resume it
+        try:
+            await self.stuck_turns.resume_all()
+        except Exception:
+            logger.exception("stuck resume at startup failed")
         self._stuck_sweep = asyncio.create_task(self._stuck_sweep_loop())
 
     async def _stop_stuck_sweep(self, _app) -> None:
@@ -301,6 +307,7 @@ class WebService:
             try:
                 await asyncio.to_thread(self.stuck.sweep,
                                         Config.STUCK_EPISODE_TTL_MINUTES)
+                await self.stuck_turns.resume_all()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -919,8 +926,8 @@ class WebService:
         if isinstance(result, web.Response):
             return result
         episode, created = result
-        if created:
-            self.stuck_turns.spawn(identity.user_uuid, episode)
+        # created or replayed, a thinking row owes a card: exactly one runner
+        self.stuck_turns.ensure(identity.user_uuid, episode)
         return web.json_response({"ok": True, "episode": episode,
                                   "replayed": not created},
                                  status=201 if created else 200)
@@ -934,6 +941,8 @@ class WebService:
             self.stuck.get, identity.user_uuid, episode_id)
         if episode is None:
             return _error("episode not found", status=404)
+        # the poll is the resume path after a restart: thinking + no runner
+        self.stuck_turns.ensure(identity.user_uuid, episode)
         return web.json_response({"ok": True, "episode": episode})
 
     async def _api_v1_stuck_react(self, request: web.Request) -> web.Response:
@@ -982,7 +991,7 @@ class WebService:
             return result
         episode, outcome = result
         if outcome == "regenerate":
-            self.stuck_turns.spawn(identity.user_uuid, episode)
+            self.stuck_turns.ensure(identity.user_uuid, episode)
         payload = {"ok": True, "episode": episode, "outcome": outcome}
         if episode.get("execution"):
             payload["execution"] = episode["execution"]

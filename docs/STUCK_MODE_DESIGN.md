@@ -473,7 +473,14 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    runner with the timeout, `src/services/tools/stuck_tools.py` `propose_unstuck`
    (terminal, pip's card allowlists it), director + briefer + helper + prompt hooks
    for `kind="stuck"`, migration `d8f2c4a7e1b9`, the three routes + TTL sweep in
-   `src/web/server.py`, `Config.STUCK_*`; tests in `tests/test_stuck_*.py`)* — `StuckEpisode` migration, the three routes, `kind="stuck"` stimulus +
+   `src/web/server.py`, `Config.STUCK_*`; tests in `tests/test_stuck_*.py`.
+   Sol's #89 round: every episode transition is a conditional update on
+   (status, generation) — the row is the durable claim and a restarted server
+   resumes persisted `thinking` rows from the poll, the open, and the sweep;
+   acceptance re-checks the task is still open and not parked; rest carries no
+   preparation; the pressed row's task id rides into the brief and the ladder;
+   a second-generation ladder is three fresh kinds or an honestly `exhausted`
+   card; "last night" is the single 23:00→06:00 window)* — `StuckEpisode` migration, the three routes, `kind="stuck"` stimulus +
    director branch, the brief in `enrich`, `propose_unstuck` tool + validation, the
    typed action schema, fallback ladder + its line pools, idempotency and 30s timeout.
    tests: three distinct kinds enforced; task-free fallback shape; generation checks;

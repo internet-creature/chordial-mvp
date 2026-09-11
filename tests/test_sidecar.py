@@ -21,7 +21,7 @@ from sqlalchemy.orm import sessionmaker
 
 import src.database.database as db_mod
 from src.database.models import Base, DeviceEvent, User
-from src.sidecar.focus import FocusEngine, FocusError
+from src.sidecar.focus import AlreadyStarted, FocusEngine, FocusError
 from src.sidecar.lines import LINE_POOLS, pick_line
 from src.sidecar.server import SidecarService
 from src.sidecar.store import SidecarStore
@@ -655,4 +655,169 @@ def test_sidecar_cors_refuses_strangers(store):
         # no Origin header = not a browser = the tauri shell / curl
         bare = await client.get("/v1/state")
         assert bare.status == 200
+    _sidecar_client_flow(store, clock, flow)
+
+
+
+# --- stuck runs: the handoff, the boundary, the stop (STUCK_MODE_DESIGN section 4)
+
+
+HANDOFF = {"execution_id": "exec-1", "episode_id": "ep-1"}
+
+
+def test_stuck_start_dedupes_on_the_execution_and_marks_the_run(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    state = engine.start(7, "stuck-mode design: write one sentence", 2,
+                         execution=HANDOFF)
+    assert state["run_mode"] == "stuck"
+    assert state["episode_id"] == "ep-1" and state["execution_id"] == "exec-1"
+    started = store.pending()[-1]
+    assert started["type"] == "session.started"
+    assert started["payload"]["run_mode"] == "stuck"
+    assert started["payload"]["execution_id"] == "exec-1"
+    # the same accepted proposal again, while it runs: the live run answers
+    with pytest.raises(AlreadyStarted) as caught:
+        engine.start(7, "stuck-mode design: write one sentence", 2,
+                     execution=HANDOFF)
+    assert caught.value.state["run_id"] == state["run_id"]
+    assert len([e for e in store.pending()
+                if e["type"] == "session.started"]) == 1
+    # stop here at the boundary: banks under its own name, ids ride along
+    clock.advance(minutes=2, seconds=10)
+    summary = engine.pause(reason="boundary")
+    assert summary["reason"] == "boundary" and summary["seconds"] == 130
+    ended = store.pending()[-1]
+    assert ended["type"] == "session.ended"
+    assert ended["payload"]["reason"] == "boundary"
+    assert ended["payload"]["episode_id"] == "ep-1"
+    assert ended["payload"]["execution_id"] == "exec-1"
+    assert ended["payload"]["target_minutes"] == 2.0
+    # and after it ended, the same execution can never start a second block
+    with pytest.raises(FocusError, match="already ran"):
+        engine.start(7, "again", 2, execution=HANDOFF)
+    assert engine.state()["running"] is False
+
+
+def test_plain_runs_carry_no_stuck_fields(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    state = engine.start(7, "novel", 25)
+    assert "run_mode" not in state
+    assert store.pending()[-1]["payload"] == {
+        "task_id": 7, "label": "novel", "target_minutes": 25.0}
+    engine.pause()
+    assert "run_mode" not in store.pending()[-1]["payload"]
+    with pytest.raises(FocusError, match="reason must be"):
+        engine.pause(reason="whatever")
+
+
+def test_stuck_handoff_is_validated(store):
+    engine = FocusEngine(store, clock=Clock())
+    with pytest.raises(FocusError, match="execution.episode_id"):
+        engine.start(7, "x", 2, execution={"execution_id": "e"})
+    with pytest.raises(FocusError, match="execution must be an object"):
+        engine.start(7, "x", 2, execution="nope")
+
+
+def test_stuck_route_replays_boundary_and_stop(store):
+    clock = Clock()
+
+    async def flow(client, service):
+        ws = await client.ws_connect("/v1/ws")
+        await ws.receive_json()
+        body = {"task_id": 7, "label": "stuck-mode design: one sentence",
+                "target_minutes": 2, "execution": HANDOFF}
+        resp = await client.post("/v1/focus/start", json=body)
+        assert resp.status == 200
+        first = await resp.json()
+        assert first["replayed"] is False and first["focus"]["run_mode"] == "stuck"
+        assert first["line"] in LINE_POOLS["focus_start"]
+        await ws.receive_json()   # line
+        await ws.receive_json()   # state
+        # the retry: the live run, no line, no second block
+        resp = await client.post("/v1/focus/start", json=body)
+        again = await resp.json()
+        assert again["replayed"] is True and again["line"] == ""
+        assert again["focus"]["run_id"] == first["focus"]["run_id"]
+        # the target crossing is the boundary, never the ding
+        clock.advance(minutes=2, seconds=1)
+        await service._tick_once()
+        line = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert line["type"] == "line" and line["moment"] == "stuck_boundary"
+        assert line["text"] in LINE_POOLS["stuck_boundary"]
+        state = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert state["focus"]["over_target"] is True
+        # stop here
+        resp = await client.post("/v1/focus/pause", json={"reason": "boundary"})
+        body = await resp.json()
+        assert body["run"]["reason"] == "boundary"
+        assert body["line"] in LINE_POOLS["stuck_stopped"]
+        # the execution is spent
+        resp = await client.post("/v1/focus/start", json={
+            "task_id": 7, "label": "x", "target_minutes": 2, "execution": HANDOFF})
+        assert resp.status == 409
+        resp = await client.post("/v1/focus/pause", json={"reason": "nope"})
+        assert resp.status in (400, 409)
+        await ws.close()
+    _sidecar_client_flow(store, clock, flow)
+
+
+
+def test_a_transition_and_its_event_land_together(store, monkeypatch):
+    """a crash between the run row and its event leaves a half-truth the
+    server can never repair (sol, #92): the two commit as one."""
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    real_enqueue = store.enqueue
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(store, "enqueue", explode)
+    with pytest.raises(RuntimeError):
+        engine.start(7, "novel", 25)
+    assert store.active_run() is None          # the run rolled back with it
+    monkeypatch.setattr(store, "enqueue", real_enqueue)
+    engine.start(7, "novel", 25)
+    assert store.active_run() is not None
+    clock.advance(minutes=5)
+    monkeypatch.setattr(store, "enqueue", explode)
+    with pytest.raises(RuntimeError):
+        engine.pause()
+    assert store.active_run() is not None      # the close rolled back too
+    monkeypatch.setattr(store, "enqueue", real_enqueue)
+    assert engine.pause()["seconds"] == 300
+
+
+def test_keep_going_persists_with_the_run(store):
+    clock = Clock()
+    engine = FocusEngine(store, clock=clock)
+    with pytest.raises(FocusError, match="no stuck run"):
+        engine.keep_going()
+    engine.start(7, "novel", 25)
+    with pytest.raises(FocusError, match="no stuck run"):
+        engine.keep_going()                     # a plain run has no boundary
+    engine.pause()
+    engine.start(7, "stuck-mode design: one sentence", 2, execution=HANDOFF)
+    assert engine.state()["boundary_choice"] is None
+    clock.advance(minutes=3)
+    assert engine.keep_going()["boundary_choice"] == "keep_going"
+    # a restart mid-overtime remembers the choice
+    again = FocusEngine(store, clock=clock)
+    assert again.state()["boundary_choice"] == "keep_going"
+
+
+def test_boundary_route(store):
+    clock = Clock()
+
+    async def flow(client, _service):
+        resp = await client.post("/v1/focus/boundary", json={"choice": "keep_going"})
+        assert resp.status == 409
+        await client.post("/v1/focus/start", json={
+            "task_id": 7, "label": "x", "target_minutes": 2, "execution": HANDOFF})
+        resp = await client.post("/v1/focus/boundary", json={"choice": "nope"})
+        assert resp.status == 400
+        resp = await client.post("/v1/focus/boundary", json={"choice": "keep_going"})
+        assert resp.status == 200
+        assert (await resp.json())["focus"]["boundary_choice"] == "keep_going"
     _sidecar_client_flow(store, clock, flow)

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { StuckEpisode, StuckProposal } from "../api/types";
 import {
+  boundaryShowing,
   containerLabel,
   enoughLine,
   handoffFor,
@@ -169,20 +170,24 @@ describe("the handoff after do this", () => {
     minutes: 2, line: "open the doc.", ...over,
   });
 
-  it("starts the task with the scoped label and the container", () => {
+  const execution = { execution_id: "x", episode_id: "e1" };
+
+  it("starts the task with the scoped label, the container, and the execution", () => {
     expect(handoffFor(exec({}), titles)).toEqual({
       kind: "start", taskId: 7, label: "stuck-mode design: write one sentence",
-      minutes: 2,
+      minutes: 2, execution,
     });
     expect(handoffFor(exec({ next_action: null, minutes: null }), titles))
-      .toEqual({ kind: "start", taskId: 7, label: "stuck-mode design", minutes: 2 });
+      .toEqual({ kind: "start", taskId: 7, label: "stuck-mode design", minutes: 2,
+                 execution });
   });
 
   it("company is an unnamed five-minute block", () => {
     expect(handoffFor(exec({ action: "start_company", kind: "company",
                              task_id: null, next_action: null, minutes: 5 }),
                       titles))
-      .toEqual({ kind: "start", taskId: null, label: "just sitting", minutes: 5 });
+      .toEqual({ kind: "start", taskId: null, label: "just sitting", minutes: 5,
+                 execution });
   });
 
   it("everything else shows its line", () => {
@@ -199,5 +204,19 @@ describe("the handoff after do this", () => {
     expect(map.get(1)).toBe("a");
     expect(map.get(2)).toBe("b");
     expect(titleMap(undefined).size).toBe(0);
+  });
+});
+
+
+describe("the boundary", () => {
+  it("shows on a stuck run over target until the run carries a choice", () => {
+    const base = { running: true, runMode: "stuck", overtime: true,
+                   boundaryChoice: null, questionOpen: false };
+    expect(boundaryShowing(base)).toBe(true);
+    expect(boundaryShowing({ ...base, runMode: null })).toBe(false);
+    expect(boundaryShowing({ ...base, overtime: false })).toBe(false);
+    expect(boundaryShowing({ ...base, boundaryChoice: "keep_going" })).toBe(false);
+    expect(boundaryShowing({ ...base, questionOpen: true })).toBe(false);
+    expect(boundaryShowing({ ...base, running: false })).toBe(false);
   });
 });

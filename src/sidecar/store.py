@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 import uuid as uuid_mod
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +73,14 @@ CREATE TABLE IF NOT EXISTS offers (
 _COLUMN_MIGRATIONS = [
     ("runs", "frozen_at", "TEXT"),
     ("runs", "frozen_reason", "TEXT"),
+    # stuck mode (docs/STUCK_MODE_DESIGN.md section 4): a run started from
+    # the page carries its mode and the ids the server attributes it by
+    ("runs", "run_mode", "TEXT"),
+    ("runs", "episode_id", "TEXT"),
+    ("runs", "execution_id", "TEXT"),
+    # the boundary choice lives with the run, not in a window's memory:
+    # a reload mid-overtime must not re-ask (sol, #92)
+    ("runs", "boundary_choice", "TEXT"),
 ]
 
 
@@ -88,9 +97,35 @@ class SidecarStore:
                 self._conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         self._conn.commit()
+        self._deferred = 0
 
     def close(self) -> None:
         self._conn.close()
+
+    # --- transitions and their events commit together --------------------------
+    # a run row without its session event (or the reverse) is a crash's
+    # half-truth the server can never repair - a retried start replays the
+    # run and cannot restore the missing event (sol, #92). every write
+    # inside `transaction()` lands in one sqlite transaction.
+
+    @contextmanager
+    def transaction(self):
+        self._deferred += 1
+        try:
+            yield
+        except BaseException:
+            self._deferred -= 1
+            if not self._deferred:
+                self._conn.rollback()
+            raise
+        else:
+            self._deferred -= 1
+            if not self._deferred:
+                self._conn.commit()
+
+    def _commit(self) -> None:
+        if not self._deferred:
+            self._conn.commit()
 
     # --- kv --------------------------------------------------------------
 
@@ -116,7 +151,7 @@ class SidecarStore:
             "VALUES (?, ?, ?, ?)",
             (str(uuid_mod.uuid4()), event_type, json.dumps(payload),
              occurred_at or utc_now_iso()))
-        self._conn.commit()
+        self._commit()
         return int(cursor.lastrowid)
 
     def pending(self, limit: int = 100) -> list[dict]:
@@ -189,13 +224,30 @@ class SidecarStore:
     # --- focus runs -----------------------------------------------------------
 
     def insert_run(self, task_id: Optional[int], label: Optional[str],
-                   target_minutes: float, started_at: str) -> int:
+                   target_minutes: float, started_at: str,
+                   run_mode: Optional[str] = None,
+                   episode_id: Optional[str] = None,
+                   execution_id: Optional[str] = None) -> int:
         cursor = self._conn.execute(
-            "INSERT INTO runs (task_id, label, target_minutes, started_at) "
-            "VALUES (?, ?, ?, ?)",
-            (task_id, label, target_minutes, started_at))
-        self._conn.commit()
+            "INSERT INTO runs (task_id, label, target_minutes, started_at, "
+            "run_mode, episode_id, execution_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, label, target_minutes, started_at,
+             run_mode, episode_id, execution_id))
+        self._commit()
         return int(cursor.lastrowid)
+
+    def set_boundary_choice(self, run_id: int, choice: str) -> None:
+        self._conn.execute("UPDATE runs SET boundary_choice = ? WHERE id = ?",
+                           (choice, run_id))
+        self._commit()
+
+    def run_by_execution(self, execution_id: str) -> Optional[dict]:
+        """the run an accepted proposal already started, in any state -
+        the dedupe the handoff promises (section 4)."""
+        row = self._conn.execute(
+            "SELECT * FROM runs WHERE execution_id = ? ORDER BY id DESC LIMIT 1",
+            (execution_id,)).fetchone()
+        return dict(row) if row else None
 
     def active_run(self) -> Optional[dict]:
         """the RUNNING run: unbanked and not frozen. a frozen run is
@@ -224,14 +276,14 @@ class SidecarStore:
         self._conn.execute(
             "UPDATE runs SET frozen_at = ?, frozen_reason = ? WHERE id = ?",
             (frozen_at, reason, run_id))
-        self._conn.commit()
+        self._commit()
 
     def close_run(self, run_id: int, ended_at: str, seconds: int,
                   end_reason: str) -> None:
         self._conn.execute(
             "UPDATE runs SET ended_at = ?, seconds = ?, end_reason = ? "
             "WHERE id = ?", (ended_at, seconds, end_reason, run_id))
-        self._conn.commit()
+        self._commit()
 
     # --- rewind offers ---------------------------------------------------------
     # one row per correction question (docs/REWIND_DESIGN.md section 6).

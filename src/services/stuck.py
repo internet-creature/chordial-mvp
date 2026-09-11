@@ -999,6 +999,97 @@ class StuckStore:
         }
 
 
+# --- outcomes, folded from the device stream (section 7) --------------------
+# a stuck run's session.started / session.ended carry the episode and
+# execution ids; the fold matches them against the episode's own
+# execution_id and merges what happened into `outcome`. nobody is asked.
+
+FOLDED_TYPES = frozenset({"session.started", "session.ended"})
+REASON_BOUNDARY = "boundary"
+# the v0 resume point (section 4): the step they did, marked as begun -
+# written here, from the durable session.ended, so a dead network or a
+# closed window can't lose it (sol, #92). one writer: the server.
+RESUME_PREFIX = "pick up where you stopped: "
+
+
+def resume_point(step: Optional[str]) -> str:
+    clean = " ".join((step or "").split())
+    if not clean:
+        return RESUME_PREFIX.rstrip(": ")
+    room = NEXT_ACTION_CAP - len(RESUME_PREFIX)
+    if len(clean) > room:
+        clean = clean[:room - 1].rstrip() + "…"
+    return RESUME_PREFIX + clean
+
+
+def fold_event(db, row) -> None:
+    """runs inside focus_flow's claimed transaction, like the rewind
+    tether's fold. a plain run (no ids) is not ours; an id that doesn't
+    match the episode's execution is a stale or foreign run and is logged,
+    never applied."""
+    payload = row.payload or {}
+    episode_uuid = payload.get("episode_id")
+    execution_id = payload.get("execution_id")
+    if not episode_uuid or not execution_id:
+        return
+    ep = db.query(StuckEpisode).filter(
+        StuckEpisode.user_uuid == row.user_uuid,
+        StuckEpisode.episode_uuid == episode_uuid).first()
+    if ep is None:
+        logger.warning("stuck fold: no episode %s for %s", episode_uuid, row.event_uuid)
+        return
+    if ep.execution_id != execution_id:
+        logger.warning("stuck fold: execution %s is not episode %s's (%s)",
+                       execution_id, episode_uuid, ep.execution_id)
+        return
+    outcome = dict(ep.outcome or {})
+    if row.event_type == "session.started":
+        ep.run_ref = {"device_id": row.device_id, "event_uuid": row.event_uuid}
+        outcome["started"] = True
+    else:
+        seconds = int(payload.get("seconds") or 0)
+        reason = payload.get("reason")
+        outcome["banked_seconds"] = int(outcome.get("banked_seconds") or 0) + seconds
+        outcome["reason"] = reason
+        outcome["stopped_at_boundary"] = reason == REASON_BOUNDARY
+        target = payload.get("target_minutes")
+        try:
+            target_seconds = int(float(target) * 60) if target is not None else None
+        except (TypeError, ValueError):
+            target_seconds = None
+        if target_seconds is not None:
+            outcome["kept_going"] = (reason != REASON_BOUNDARY
+                                     and seconds > target_seconds)
+        if reason == REASON_BOUNDARY:
+            written = _write_resume_point(db, ep)
+            if written is not None:
+                outcome["resume_point"] = written
+    ep.outcome = outcome
+
+
+def _write_resume_point(db, ep: StuckEpisode) -> Optional[str]:
+    """the accepted proposal's prepared step becomes the resume point -
+    only while the task still carries that step untouched. a step the
+    person already rewrote is theirs; a task since closed is left alone."""
+    accepted = next((p for p in (ep.proposals or [])
+                     if p.get("proposal_id") == ep.accepted_proposal_id), None)
+    step = (accepted or {}).get("prepared_step") or {}
+    if not step.get("task_id") or not step.get("next_action"):
+        return None
+    task = db.query(Task).filter(Task.user_uuid == ep.user_uuid,
+                                 Task.id == step["task_id"]).first()
+    if task is None or task.status not in vocab.TASK_STATUS_OPEN:
+        return None
+    current = " ".join((task.next_action or "").split())
+    expected = " ".join(str(step["next_action"]).split())[:NEXT_ACTION_CAP].strip()
+    if current != expected:
+        return None
+    value = resume_point(expected)
+    task.next_action = value
+    task.updated_at = utc_now()
+    return value
+
+
 def execution_for(row: StuckEpisode, proposal: dict) -> dict:
     """the typed handoff the sidecar deduplicates on (section 4 + 5.1):
     what to do locally, exactly as the visible action said."""

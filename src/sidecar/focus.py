@@ -47,6 +47,24 @@ def _parse(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
 
 
+# a stuck run's mode (docs/STUCK_MODE_DESIGN.md section 4); plain runs
+# carry no mode and their events stay byte-identical to before
+RUN_MODE_STUCK = "stuck"
+# the reasons a pause may end a run with
+PAUSE_REASONS = ("paused", "boundary")
+# the one boundary choice that persists with the run ("stop here" ends it)
+BOUNDARY_KEEP_GOING = "keep_going"
+
+
+class AlreadyStarted(ValueError):
+    """the same accepted proposal is already running: the handoff replays
+    its state instead of starting a second block (section 4)."""
+
+    def __init__(self, state: dict):
+        super().__init__("that step is already running")
+        self.state = state
+
+
 class FocusError(ValueError):
     """a request the focus state can't honor."""
 
@@ -97,7 +115,7 @@ class FocusEngine:
             return {"running": False, "banked": banked, "frozen": frozen}
         run_seconds = self._credited_seconds(active)
         target_seconds = int(active["target_minutes"] * 60)
-        return {
+        state = {
             "running": True,
             "run_id": active["id"],
             "task_id": active["task_id"],
@@ -110,15 +128,32 @@ class FocusEngine:
             "banked": banked,
             "frozen": frozen,
         }
+        if _run_mode(active):
+            # the window renders the boundary exit from this, not from
+            # the (gated, maybe hushed) line
+            state["run_mode"] = _run_mode(active)
+            state["episode_id"] = active.get("episode_id")
+            state["execution_id"] = active.get("execution_id")
+            state["boundary_choice"] = active.get("boundary_choice")
+        return state
+
+    def is_stuck_run(self, run: Optional[dict]) -> bool:
+        return _run_mode(run) == RUN_MODE_STUCK
 
     # --- transitions -----------------------------------------------------------
 
     def start(self, task_id: Optional[int] = None,
               label: Optional[str] = None,
-              target_minutes: float = DEFAULT_TARGET_MINUTES) -> dict:
+              target_minutes: float = DEFAULT_TARGET_MINUTES,
+              execution: Optional[dict] = None) -> dict:
         """run the clock on a task. if another task's clock is running this
         IS the switch: the old run pauses (banks) first. starting the task
-        that's already running is a no-op question, not an error."""
+        that's already running is a no-op question, not an error.
+
+        `execution` is the stuck page's typed handoff (section 4):
+        {execution_id, episode_id}. it is idempotent on execution_id - a
+        retry while that run is live raises AlreadyStarted carrying the
+        state; a retry after it ended is refused, never a second block."""
         if not isinstance(target_minutes, (int, float)) \
                 or isinstance(target_minutes, bool) \
                 or not (MIN_TARGET_MINUTES <= target_minutes
@@ -131,10 +166,18 @@ class FocusEngine:
                                     or task_id < 1):
             raise FocusError("task_id must be a positive integer")
         label = (label or "").strip()[:_LABEL_CAP] or None
+        handoff = _clean_execution(execution)
+        if handoff is not None:
+            prior = self.store.run_by_execution(handoff["execution_id"])
+            if prior is not None:
+                if prior["ended_at"] is None and prior["frozen_at"] is None:
+                    raise AlreadyStarted(self.state())
+                raise FocusError("that step already ran - it can't start twice")
 
         active = self.store.active_run()
         if active is not None:
-            if active["task_id"] == task_id and task_id is not None:
+            if active["task_id"] == task_id and task_id is not None \
+                    and handoff is None:
                 raise FocusError("that task's clock is already running")
             if self.store.open_offer_for_run(active["id"]) is not None:
                 # an unresolved correction: the old run freezes unbanked
@@ -144,28 +187,54 @@ class FocusEngine:
                 self._end_run(active, "switched")
 
         now = self.clock()
-        self.store.insert_run(task_id, label, float(target_minutes),
-                              now.isoformat())
-        # target_minutes rides along so the server's day digest can say
-        # "18 min in, target 25" (docs/FOCUS_DOGFOOD_DESIGN.md section 3)
-        self.store.enqueue("session.started",
-                           {"task_id": task_id, "label": label,
-                            "target_minutes": float(target_minutes)},
-                           occurred_at=now.isoformat())
+        # the run and its event land together or not at all (sol, #92)
+        with self.store.transaction():
+            self.store.insert_run(
+                task_id, label, float(target_minutes), now.isoformat(),
+                run_mode=RUN_MODE_STUCK if handoff else None,
+                episode_id=handoff["episode_id"] if handoff else None,
+                execution_id=handoff["execution_id"] if handoff else None)
+            # target_minutes rides along so the server's day digest can say
+            # "18 min in, target 25" (docs/FOCUS_DOGFOOD_DESIGN.md section
+            # 3); a stuck run adds the ids the server attributes it by
+            payload = {"task_id": task_id, "label": label,
+                       "target_minutes": float(target_minutes)}
+            if handoff:
+                payload.update({"run_mode": RUN_MODE_STUCK,
+                                "episode_id": handoff["episode_id"],
+                                "execution_id": handoff["execution_id"]})
+            self.store.enqueue("session.started", payload,
+                               occurred_at=now.isoformat())
         return self.state()
 
-    def pause(self) -> Optional[dict]:
+    def keep_going(self) -> dict:
+        """the boundary's other exit, persisted with the run: a reload
+        mid-overtime must not ask again (sol, #92). only a stuck run has
+        a boundary to keep going past."""
+        active = self.store.active_run()
+        if active is None or not self.is_stuck_run(active):
+            raise FocusError("no stuck run is at its boundary")
+        self.store.set_boundary_choice(active["id"], BOUNDARY_KEEP_GOING)
+        return self.state()
+
+    def pause(self, reason: str = "paused") -> Optional[dict]:
         """stop the clock. with no open correction the run banks and its
         summary returns; with one, the run FREEZES unbanked (the clock
         stops either way - a safety net that leaves a runaway timer
         running would be the disease pretending to be the cure) and the
-        summary says so. None when nothing was running."""
+        summary says so. None when nothing was running.
+
+        `reason="boundary"` is the stuck run's "stop here" (section 4): the
+        same bank, its own name - the fold reads it as stopped at the line
+        the person drew."""
+        if reason not in PAUSE_REASONS:
+            raise FocusError("reason must be one of " + ", ".join(PAUSE_REASONS))
         active = self.store.active_run()
         if active is None:
             return None
         if self.store.open_offer_for_run(active["id"]) is not None:
-            return self._freeze(active, "paused")
-        return self._end_run(active, "paused")
+            return self._freeze(active, reason)
+        return self._end_run(active, reason)
 
     def finish(self) -> dict:
         """the task is DONE - the celebration transition. banks the running
@@ -173,38 +242,44 @@ class FocusEngine:
         for the task. requires a running clock (finishing is an act of
         landing, not of tidying). an open correction freezes here too -
         the celebration waits one answer."""
-        active = self.store.active_run()
-        if active is None:
-            raise FocusError("no clock is running")
-        if self.store.open_offer_for_run(active["id"]) is not None:
-            return self._freeze(active, "finished")
-        summary = self._end_run(active, "finished")
-        self._emit_completed(active, summary)
-        return summary
+        with self.store.transaction():
+            active = self.store.active_run()
+            if active is None:
+                raise FocusError("no clock is running")
+            if self.store.open_offer_for_run(active["id"]) is not None:
+                return self._freeze(active, "finished")
+            summary = self._end_run(active, "finished")
+            self._emit_completed(active, summary)
+            return summary
 
     def close_frozen(self, run_id: int) -> dict:
         """bank a frozen run once its correction resolved: the run ends at
         its FREEZE instant (a late answer never inflates it), with
         credited seconds. emits the events its intended transition owed."""
-        run = self.store.run(run_id)
-        if run is None or run["ended_at"] is not None \
-                or not run.get("frozen_at"):
-            raise FocusError("no frozen run to close")
-        seconds = self._credited_seconds(run)
-        self.store.close_run(run_id, run["frozen_at"], seconds,
-                             run["frozen_reason"] or "paused")
-        self._announced.discard(run_id)
-        summary = {"task_id": run["task_id"], "label": run["label"],
-                   "seconds": seconds,
-                   "reason": run["frozen_reason"] or "paused",
-                   "ended_at": run["frozen_at"]}
-        self._emit_ended(run, summary)
-        if run["frozen_reason"] == "finished":
-            self._emit_completed(run, summary)
-        return summary
+        with self.store.transaction():
+            run = self.store.run(run_id)
+            if run is None or run["ended_at"] is not None \
+                    or not run.get("frozen_at"):
+                raise FocusError("no frozen run to close")
+            seconds = self._credited_seconds(run)
+            self.store.close_run(run_id, run["frozen_at"], seconds,
+                                 run["frozen_reason"] or "paused")
+            self._announced.discard(run_id)
+            summary = {"task_id": run["task_id"], "label": run["label"],
+                       "seconds": seconds,
+                       "reason": run["frozen_reason"] or "paused",
+                       "ended_at": run["frozen_at"]}
+            self._emit_ended(run, summary)
+            if run["frozen_reason"] == "finished":
+                self._emit_completed(run, summary)
+            return summary
 
     def _freeze(self, active: dict, reason: str) -> dict:
         now = self.clock()
+        with self.store.transaction():
+            return self._freeze_inside(active, reason, now)
+
+    def _freeze_inside(self, active: dict, reason: str, now) -> dict:
         self.store.freeze_run(active["id"], now.isoformat(), reason)
         # the server must see the clock STOP: nothing banks until the
         # correction resolves, but a session.started with no transition
@@ -225,13 +300,19 @@ class FocusEngine:
         alongside so nothing is laundered."""
         end = _parse(summary["ended_at"])
         gross = max(0, int((end - _parse(run["started_at"])).total_seconds()))
-        self.store.enqueue(
-            "session.ended",
-            {"task_id": run["task_id"], "label": run["label"],
-             "seconds": summary["seconds"], "reason": summary["reason"],
-             "gross_seconds": gross,
-             "excised_seconds": self.store.excised_seconds(run["id"])},
-            occurred_at=summary["ended_at"])
+        payload = {"task_id": run["task_id"], "label": run["label"],
+                   "seconds": summary["seconds"], "reason": summary["reason"],
+                   "gross_seconds": gross,
+                   "excised_seconds": self.store.excised_seconds(run["id"])}
+        if _run_mode(run):
+            # the ids the server folds the outcome by, and the target so it
+            # can tell "stopped at the line" from "kept going" (section 7)
+            payload.update({"run_mode": _run_mode(run),
+                            "episode_id": run.get("episode_id"),
+                            "execution_id": run.get("execution_id"),
+                            "target_minutes": run["target_minutes"]})
+        self.store.enqueue("session.ended", payload,
+                           occurred_at=summary["ended_at"])
 
     def _emit_completed(self, run: dict, summary: dict) -> None:
         banked = self.store.banked_since(self._day_start_iso())
@@ -291,10 +372,36 @@ class FocusEngine:
     def _end_run(self, active: dict, reason: str) -> dict:
         now = self.clock()
         seconds = self._credited_seconds(active)
-        self.store.close_run(active["id"], now.isoformat(), seconds, reason)
+        # the close and its event land together (sol, #92)
+        with self.store.transaction():
+            self.store.close_run(active["id"], now.isoformat(), seconds, reason)
+            summary = {"task_id": active["task_id"], "label": active["label"],
+                       "seconds": seconds, "reason": reason,
+                       "ended_at": now.isoformat()}
+            self._emit_ended(active, summary)
         self._announced.discard(active["id"])
-        summary = {"task_id": active["task_id"], "label": active["label"],
-                   "seconds": seconds, "reason": reason,
-                   "ended_at": now.isoformat()}
-        self._emit_ended(active, summary)
         return summary
+
+
+def _run_mode(run: Optional[dict]) -> Optional[str]:
+    if not run:
+        return None
+    try:
+        return run["run_mode"] or None
+    except (KeyError, IndexError):
+        return None
+
+
+def _clean_execution(execution: Optional[dict]) -> Optional[dict]:
+    """the handoff, validated: both ids non-empty strings, or nothing."""
+    if execution is None:
+        return None
+    if not isinstance(execution, dict):
+        raise FocusError("execution must be an object")
+    out = {}
+    for key in ("execution_id", "episode_id"):
+        value = execution.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise FocusError(f"execution.{key} must be a non-empty string")
+        out[key] = value.strip()[:64]
+    return out

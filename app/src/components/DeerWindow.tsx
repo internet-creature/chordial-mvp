@@ -19,6 +19,7 @@ import {
   type FocusState,
   type Resolution,
   type RewindOffer,
+  keepGoingAtBoundary,
 } from "../api/sidecar";
 import type { DoneTaskRow, TaskRow } from "../api/types";
 import { useToday } from "../lib/useToday";
@@ -90,7 +91,12 @@ import {
 } from "../lib/tauriWindow";
 import { useLeafFlourish } from "./LeafFlourish";
 import InlineContent from "./InlineContent";
-import { makeRequest, STUCK_COPY, writeStuckRequest } from "../lib/stuck";
+import {
+  boundaryShowing,
+  makeRequest,
+  STUCK_COPY,
+  writeStuckRequest,
+} from "../lib/stuck";
 
 // the bar has one text slot: a fresh saying borrows it this long, then
 // the running task's title has it back. the saying itself stays in the
@@ -694,6 +700,55 @@ export default function DeerWindow() {
   const offerOnActiveRun =
     offer !== null && focus.running && offer.run_id === focus.run_id;
 
+  // the stuck run's boundary (docs/STUCK_MODE_DESIGN.md §4): two exits,
+  // equal weight, shown from the state (the line may be hushed). the
+  // choice persists with the run in the sidecar - a reload never asks
+  // again (sol, #92).
+  const boundary = boundaryShowing({
+    running: focus.running,
+    runMode: focus.run_mode,
+    overtime,
+    boundaryChoice: focus.boundary_choice,
+    questionOpen: offerOnActiveRun,
+  });
+
+  /** stop here: the run banks under its own name. the resume point is
+   * the server's to write from the durable session.ended - here only the
+   * evidence line, a beat after the stop's own. */
+  async function onStopHere() {
+    if (busy) return;
+    const taskId = focus.task_id;
+    setBusy(true);
+    setConfirmingFinish(false);
+    setConfirmingPause(false);
+    try {
+      const result = await pauseFocus(undefined, "boundary");
+      setFocus(result.focus);
+      if (result.offer !== undefined) setOffer(result.offer ?? null);
+      say(result.line);
+      if (!result.focus.running && typeof taskId === "number") {
+        window.setTimeout(() => say(STUCK_COPY.resumeLine), 4000);
+      }
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onKeepGoing() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await keepGoingAtBoundary();
+      setFocus(result.focus);
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onPause() {
     if (busy) return;
     // an open question rides the transition: the pause button becomes the
@@ -982,6 +1037,25 @@ export default function DeerWindow() {
                 ✕
               </button>
             </>
+          ) : boundary ? (
+            <>
+              <button
+                className="deer-bar-btn boundary"
+                onClick={onStopHere}
+                disabled={busy}
+                title={STUCK_COPY.boundaryTitle}
+              >
+                {STUCK_COPY.stopHere}
+              </button>
+              <button
+                className="deer-bar-btn boundary"
+                onClick={onKeepGoing}
+                disabled={busy}
+                title={STUCK_COPY.boundaryTitle}
+              >
+                {STUCK_COPY.keepGoing}
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -1229,6 +1303,25 @@ export default function DeerWindow() {
                   onClick={() => setConfirmingFinish(false)}
                 >
                   keep going
+                </button>
+              </>
+            ) : boundary ? (
+              <>
+                <button
+                  className="deer-boundary-btn"
+                  onClick={onStopHere}
+                  disabled={busy}
+                  title={STUCK_COPY.boundaryTitle}
+                >
+                  {STUCK_COPY.stopHere}
+                </button>
+                <button
+                  className="deer-boundary-btn"
+                  onClick={onKeepGoing}
+                  disabled={busy}
+                  title={STUCK_COPY.boundaryTitle}
+                >
+                  {STUCK_COPY.keepGoing}
                 </button>
               </>
             ) : (

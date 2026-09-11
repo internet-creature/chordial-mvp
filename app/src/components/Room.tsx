@@ -272,9 +272,9 @@ export default function Room({
   const subtitle = cycleRoom ? cycleRoom.label : dateLine;
   const emptyCopy = cycleRoom
     ? cycleRoom.type === "cycle_retro"
-      ? "the ledger is on the table. say what the cycle felt like."
-      : "the next cycle starts as a conversation — say where you want it to go."
-    : "it’s quiet in here. say hi — someone will hear you.";
+      ? "review this cycle."
+      : "plan your next cycle."
+    : "start a conversation.";
 
   return (
     <div className="room">
@@ -288,10 +288,10 @@ export default function Room({
           <h2>{title}</h2>
           <p className="room-date">{subtitle}</p>
         </div>
-        <span
-          className={`ws-dot ${STATUS_DOT[socketStatus]}`}
-          title={`connection: ${socketStatus}`}
-        />
+        <span className="room-connection" role="status">
+          <span className={`ws-dot ${STATUS_DOT[socketStatus]}`} aria-hidden="true" />
+          {socketStatus === "open" ? "connected" : socketStatus === "connecting" ? "connecting…" : "offline"}
+        </span>
       </header>
 
       <div className="room-log" ref={logRef} onScroll={onLogScroll}>
@@ -370,7 +370,7 @@ export default function Room({
             value={draft}
             onChange={(e) => setDraft(e.currentTarget.value)}
             onKeyDown={onComposerKey}
-            placeholder="say something…"
+            placeholder="message…"
             rows={2}
             disabled={sending}
           />
@@ -380,7 +380,7 @@ export default function Room({
         </form>
       ) : (
         <p className="room-quiet">
-          the council is away right now — this connection can’t chat yet.
+          chat is unavailable on this connection.
         </p>
       )}
     </div>

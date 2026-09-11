@@ -12,6 +12,7 @@
     "window-state:default",
     "core:window:allow-hide",
     "core:window:allow-show",
+    "core:window:allow-set-theme",
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
     "core:window:allow-set-size",

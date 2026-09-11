@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   createTask,
-  fetchToday,
   patchTask,
   SERVER_URL,
   setTaskStatus,
@@ -21,7 +20,9 @@ import {
   type Resolution,
   type RewindOffer,
 } from "../api/sidecar";
-import type { DoneTaskRow, TaskRow, TodayPayload } from "../api/types";
+import type { DoneTaskRow, TaskRow } from "../api/types";
+import { useToday } from "../lib/useToday";
+import TaskSyncStatus from "./TaskSyncStatus";
 import {
   autoBarEnabled,
   barPositionFrom,
@@ -54,7 +55,15 @@ import {
   quietLine,
   removeLabel,
 } from "../lib/rewind";
-import { bubbleFallback } from "../lib/bubble";
+import {
+  dayStatus,
+  dismissSaying,
+  lastSayingText,
+  loadSaying,
+  nextSeq,
+  saveSaying,
+  type Saying,
+} from "../lib/bubble";
 import {
   rememberScopeSkip,
   runLabel,
@@ -78,10 +87,15 @@ import {
   windowPosition,
   workArea,
 } from "../lib/tauriWindow";
-import Confetti from "./Confetti";
+import { useLeafFlourish } from "./LeafFlourish";
 import InlineContent from "./InlineContent";
 
-const LINE_LINGER_MS = 12000;
+// the bar has one text slot: a fresh saying borrows it this long, then
+// the running task's title has it back. the saying itself stays in the
+// bubble until the next one or a dismiss - nothing times it out.
+const BAR_LINE_MS = 12000;
+// a chrome notice (an action that did not go through) is brief
+const NOTICE_MS = 8000;
 const TOKEN_POLL_MS = 2500;
 const PENDING_RETRY_MS = 10000;
 // the card collapses to the quiet chip after this - deferral, not expiry
@@ -116,15 +130,22 @@ export default function DeerWindow() {
     listPendingDone(window.localStorage),
   );
   const [activity, setActivity] = useState<ActivityFlags | null>(null);
-  const [today, setToday] = useState<TodayPayload | null>(null);
-  const [line, setLine] = useState<string | null>(null);
+  const { today, error: taskError, updatedAt, refreshToday } = useToday(token);
+  // what the companion last said, and a chrome notice: two different
+  // things, two different homes (the bubble, the status row)
+  const [saying, setSaying] = useState<Saying | null>(() =>
+    loadSaying(window.sessionStorage),
+  );
+  const latestSaying = useRef(saying);
+  const sayingRevision = useRef(0);
+  const [notice, setNotice] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [newTitle, setNewTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmingFinish, setConfirmingFinish] = useState(false);
   const [confirmingPause, setConfirmingPause] = useState(false);
-  const [celebrating, setCelebrating] = useState(false);
+  const { flourish, leaves } = useLeafFlourish();
   const [offer, setOffer] = useState<RewindOffer | null>(null);
   const [cardExpanded, setCardExpanded] = useState(false);
   const [showAlt, setShowAlt] = useState(false);
@@ -149,17 +170,34 @@ export default function DeerWindow() {
   );
   const [peeking, setPeeking] = useState(false);
   const [onTop, setOnTop] = useState<boolean | null>(null);
-  const lineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // the window geometry runner: one switch at a time, in order
   const geometry = useRef<Promise<void>>(Promise.resolve());
   const wornForm = useRef<Form | null>(null);
 
-  const showLine = useCallback((text: string) => {
-    setLine(text);
-    if (lineTimer.current !== null) clearTimeout(lineTimer.current);
-    lineTimer.current = setTimeout(() => setLine(null), LINE_LINGER_MS);
+  /** the companion said something: it shows until replaced or dismissed */
+  const say = useCallback((text: string | null | undefined) => {
+    if (!text) return;
+    sayingRevision.current++;
+    const next = { seq: nextSeq(latestSaying.current, Date.now()), text };
+    latestSaying.current = next;
+    saveSaying(window.sessionStorage, next);
+    setSaying(next);
+  }, []);
+
+  const dismiss = useCallback(() => {
+    sayingRevision.current++;
+    setSaying(null);
+    dismissSaying(window.sessionStorage);
+  }, []);
+
+  /** chrome speaking, not the companion: a failed action, briefly */
+  const showNotice = useCallback((text: string) => {
+    setNotice(text);
+    if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), NOTICE_MS);
   }, []);
 
   /** open the card; after a while it settles into the chip - the person's
@@ -179,13 +217,6 @@ export default function DeerWindow() {
     setShowAlt(false);
     setConfirmingPause(false);
   }, []);
-
-  const refreshToday = useCallback(() => {
-    if (!token) return;
-    fetchToday(token)
-      .then(setToday)
-      .catch(() => {});
-  }, [token]);
 
   // notice link/relink/revoke from the main window: storage event + poll.
   // the async load keeps arrivals in order by only applying a changed value
@@ -223,16 +254,29 @@ export default function DeerWindow() {
   }, [token, connected]);
 
   useEffect(() => {
+    let cancelled = false;
+    const revision = sayingRevision.current;
     fetchSidecarState()
       .then((state) => {
+        if (cancelled) return;
         setFocus(state.focus);
         if (state.activity) setActivity(state.activity);
-        if (state.line) setLine(state.line);
+        // the sidecar repeats its latest line on connect: a line already
+        // shown (or dismissed) is not said again. A newer arrival or dismissal
+        // also wins over a snapshot that was already in flight.
+        if (
+          revision === sayingRevision.current &&
+          state.line &&
+          state.line !== lastSayingText(window.sessionStorage)
+        )
+          say(state.line);
         setOffer(state.offer ?? null);
       })
       .catch(() => {});
-    refreshToday();
-  }, [token, connected, refreshToday]);
+    return () => {
+      cancelled = true;
+    };
+  }, [token, connected, say]);
 
   useEffect(() => {
     const socket = new SidecarSocket({
@@ -242,7 +286,7 @@ export default function DeerWindow() {
           if (payload.activity) setActivity(payload.activity);
           if ("offer" in payload) setOffer(payload.offer ?? null);
         }
-        if (payload.type === "line") showLine(payload.text);
+        if (payload.type === "line") say(payload.text);
         if (payload.type === "rewind_offer") {
           // the return moment: the card IS the welcome
           setOffer(payload.offer);
@@ -253,7 +297,7 @@ export default function DeerWindow() {
     });
     socket.start();
     return () => socket.stop();
-  }, [showLine, expandCard]);
+  }, [say, expandCard]);
 
   // a question that resolved elsewhere takes its controls with it
   useEffect(() => {
@@ -264,6 +308,7 @@ export default function DeerWindow() {
     () => () => {
       if (cardTimer.current !== null) clearTimeout(cardTimer.current);
       if (appliedTimer.current !== null) clearTimeout(appliedTimer.current);
+      if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
     },
     [],
   );
@@ -472,13 +517,13 @@ export default function DeerWindow() {
         minutes,
       );
       setFocus(result.focus);
-      showLine(result.line);
+      say(result.line);
       rememberTarget(window.sessionStorage, task.id, minutes);
       setSelectedId(null);
       setEditingScope(false);
       setPeeking(false); // a fresh start goes to the bar
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -507,7 +552,6 @@ export default function DeerWindow() {
     if (token) {
       try {
         await patchTask(token, task.id, { next_action: scope });
-        refreshToday();
       } catch {
         // the clock still starts; the line lives in the run label
       }
@@ -529,9 +573,8 @@ export default function DeerWindow() {
     try {
       await patchTask(token, task.id, { next_action: scope });
       setEditingScope(false);
-      refreshToday();
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "couldn’t save that");
+      showNotice(err instanceof Error ? err.message : "couldn’t save that");
     } finally {
       setBusy(false);
     }
@@ -547,7 +590,7 @@ export default function DeerWindow() {
       if (!stopped) {
         // a sidecar outage or a refused transition: the clock may still
         // be counting, so the task stays where it is (sol, #87)
-        showLine("couldn’t stop the clock — she stays on the list");
+        showNotice("couldn’t pause the timer — task unchanged");
         return;
       }
     }
@@ -555,9 +598,8 @@ export default function DeerWindow() {
     try {
       await patchTask(token, task.id, { set_aside: true });
       setSelectedId(null);
-      refreshToday();
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "couldn’t set that aside");
+      showNotice(err instanceof Error ? err.message : "couldn’t set that aside");
     } finally {
       setBusy(false);
     }
@@ -584,9 +626,8 @@ export default function DeerWindow() {
     try {
       await patchTask(token, task.id, patch);
       setAsideId(null);
-      refreshToday();
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -616,10 +657,10 @@ export default function DeerWindow() {
       const result = await pauseFocus(resolution);
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
-      showLine(result.line);
+      say(result.line);
       return !result.focus.running;
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
       return false;
     } finally {
       setBusy(false);
@@ -653,12 +694,12 @@ export default function DeerWindow() {
       const result = await finishFocus(resolution);
       setFocus(result.focus);
       if (result.offer !== undefined) setOffer(result.offer ?? null);
-      showLine(result.line);
+      say(result.line);
       if (result.held) return; // frozen: the answer will finish it
-      setCelebrating(true);
+      flourish();
       await markTaskDone(taskId);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -710,7 +751,7 @@ export default function DeerWindow() {
       // the next authoritative question, straight from the response -
       // another held block's card must not be lost to a broadcast race
       setOffer(result.offer ?? null);
-      if (result.line) showLine(result.line);
+      say(result.line);
       if (action === "remove" && !result.run) {
         // in-run apply: show the resting state with its undo
         const boundary = at ?? resolved.candidates[0]?.at;
@@ -727,11 +768,11 @@ export default function DeerWindow() {
         );
       }
       if (result.run?.reason === "finished") {
-        setCelebrating(true);
+        flourish();
         await markTaskDone(resolved.task_id);
       }
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -746,7 +787,7 @@ export default function DeerWindow() {
       setOffer(result.offer ?? null);
       setApplied(null);
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "hm, that didn’t work");
+      showNotice(err instanceof Error ? err.message : "action failed — try again");
     } finally {
       setBusy(false);
     }
@@ -762,9 +803,8 @@ export default function DeerWindow() {
     try {
       await createTask(token, title);
       setNewTitle("");
-      refreshToday();
     } catch (err) {
-      showLine(err instanceof Error ? err.message : "couldn’t add that");
+      showNotice(err instanceof Error ? err.message : "couldn’t add that");
     } finally {
       setBusy(false);
     }
@@ -796,8 +836,8 @@ export default function DeerWindow() {
         aria-pressed={onTop !== false}
         title={
           onTop === false
-            ? "keep her on top of other windows"
-            : "let other windows cover her"
+            ? "keep on top"
+            : "unpin window"
         }
       >
         📌
@@ -806,7 +846,7 @@ export default function DeerWindow() {
         className="deer-win-btn"
         onClick={onHide}
         aria-label="minimize"
-        title="tuck her away — the tray brings her back"
+        title="hide — reopen from chordial’s sidebar or the tray"
       >
         –
       </button>
@@ -814,46 +854,44 @@ export default function DeerWindow() {
         className="deer-win-btn"
         onClick={onHide}
         aria-label="close"
-        title="close the window — the clock keeps counting"
+        title="hide companion — reopen from chordial’s sidebar; the clock keeps counting"
       >
         ×
       </button>
     </div>
   );
 
-  // the celebration lives outside both forms: a den <-> bar switch
-  // mid-burst must neither restart it nor lose it (the canvas is
-  // positioned against the viewport, so it covers whichever form is on)
-  const confetti = celebrating && (
-    <Confetti onDone={() => setCelebrating(false)} />
-  );
+  // the bar's one text slot: a notice first, then a saying while fresh
+  const barLine =
+    notice ??
+    (saying && now - saying.seq < BAR_LINE_MS ? saying.text : null);
 
   // --- the bar: the slim form while a clock runs (§11.1) ----------------
 
   if (form === "bar") {
     return (
       <>
-      {confetti}
+      {leaves}
       <div className="deer-bar" data-tauri-drag-region="true">
         <button
           className={`deer-bar-deer${overtime ? " perked" : ""}${
             activity?.blocked ? " hushed" : ""
           }`}
           onClick={() => setPeeking(true)}
-          title="open the den — the clock keeps running"
-          aria-label="open the den"
+          title="show tasks — timer keeps running"
+          aria-label="show tasks"
         >
           🦌
         </button>
         <div className="deer-bar-text" data-tauri-drag-region="true">
-          {line ? (
-            <span className="deer-bar-line">
-              <InlineContent content={line} />
+          {barLine ? (
+            <span className={`deer-bar-line${notice ? " notice" : ""}`}>
+              <InlineContent content={barLine} />
             </span>
           ) : (
             <span className="deer-bar-title" data-tauri-drag-region="true">
               {activity?.blocked ? (
-                "hushed — meeting nearby"
+                "notifications paused"
               ) : runningLabel ? (
                 <>
                   {runningLabel.title}
@@ -865,7 +903,7 @@ export default function DeerWindow() {
                   )}
                 </>
               ) : (
-                "on watch beside you"
+                "timer running"
               )}
             </span>
           )}
@@ -889,7 +927,7 @@ export default function DeerWindow() {
                 setPeeking(true);
                 expandCard();
               }}
-              title="a small question is waiting in the den"
+              title="review time adjustment"
               aria-label="open the question"
             >
               ?
@@ -955,12 +993,13 @@ export default function DeerWindow() {
   // when she couldn't be moved at all).
   return (
     <>
-    {confetti}
+    {leaves}
     <div className="deer-window" data-tauri-drag-region="true">
       <div className="deer-drag" data-tauri-drag-region="true">
+        <span className="deer-caption" data-tauri-drag-region="true">companion</span>
         <span
           className={`deer-link-dot${connected ? " on" : ""}`}
-          title={connected ? "the deer is home" : "looking for the sidecar…"}
+          title={connected ? "timer connected" : "timer disconnected"}
         />
         {windowControls(false)}
       </div>
@@ -975,27 +1014,22 @@ export default function DeerWindow() {
         >
           🦌
         </div>
-        <div
-          className={`deer-bubble${line ? " speaking" : ""}`}
-          role="status"
-          aria-live="polite"
-        >
-          <span className="deer-bubble-text">
-            <InlineContent
-              content={
-                line ??
-                bubbleFallback({
-                  blocked: !!activity?.blocked,
-                  drifting: !!activity?.drifting,
-                  running: focus.running,
-                  overtime,
-                  openCount: openTasks.length,
-                  doneCount: doneTasks.length,
-                  minutesToday,
-                })
-              }
-            />
-          </span>
+        <div className="deer-bubble-slot" role="status" aria-live="polite">
+          {saying && (
+            <div className="deer-bubble">
+              <span className="deer-bubble-text">
+                <InlineContent content={saying.text} />
+              </span>
+              <button
+                className="deer-bubble-dismiss"
+                onClick={dismiss}
+                aria-label="dismiss"
+                title="dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1005,7 +1039,7 @@ export default function DeerWindow() {
             <p className="deer-offer-line">
               {offer.frozen
                 ? `clock's stopped — answering will ${frozenVerb(offer.frozen_reason)}. `
-                : "*ears perk* welcome back. "}
+                : ""}
               {quietLine(offer)}
             </p>
             <div className="deer-offer-actions">
@@ -1198,9 +1232,9 @@ export default function DeerWindow() {
             <button
               className="deer-to-bar"
               onClick={() => setPeeking(false)}
-              title="back to the slim bar"
+              title="show timer"
             >
-              back to the bar
+              show timer
             </button>
           )}
         </div>
@@ -1208,6 +1242,25 @@ export default function DeerWindow() {
 
       {token ? (
         <div className="deer-tasks">
+          <TaskSyncStatus
+            error={taskError}
+            notice={notice}
+            updatedAt={updatedAt}
+            onRefresh={refreshToday}
+            summary={
+              today
+                ? dayStatus({
+                    blocked: !!activity?.blocked,
+                    drifting: !!activity?.drifting,
+                    running: focus.running,
+                    overtime,
+                    openCount: openTasks.length,
+                    doneCount: doneTasks.length,
+                    minutesToday,
+                  })
+                : undefined
+            }
+          />
           <ul>
             {openTasks.map((task) => {
               const active = focus.running && focus.task_id === task.id;
@@ -1551,11 +1604,11 @@ export default function DeerWindow() {
                 </li>
               );
             })}
-            {openTasks.length === 0 &&
+            {today && openTasks.length === 0 &&
               doneTasks.length === 0 &&
               asideTasks.length === 0 && (
                 <li className="deer-empty">
-                  nothing on the list yet — jot one below.
+                  no tasks scheduled.
                 </li>
               )}
           </ul>
@@ -1564,16 +1617,17 @@ export default function DeerWindow() {
               value={newTitle}
               onChange={(e) => setNewTitle(e.currentTarget.value)}
               placeholder="add a task…"
+              aria-label="New task title"
               maxLength={300}
             />
-            <button type="submit" disabled={busy || !newTitle.trim()}>
+            <button type="submit" aria-label="Add task" disabled={busy || !newTitle.trim()}>
               +
             </button>
           </form>
         </div>
       ) : (
         <p className="deer-unlinked">
-          link chordial in the main window first — then i can see your day.
+          link your device in the main window.
         </p>
       )}
 

@@ -49,14 +49,13 @@ export default function ArchiveRoom({
         month: "long",
         day: "numeric",
       })
-    : "before the rooms";
+    : "earlier conversations";
 
   return (
     <div className="room archive">
       <header className="room-head">
         <div>
           <h2>{dateLine}</h2>
-          <p className="room-date">a remembered day</p>
         </div>
         <button className="archive-back" onClick={onBack}>
           ← back
@@ -69,7 +68,7 @@ export default function ArchiveRoom({
         // one click opens it, the transcript below is scrollable anyway
         <details className="archive-summary">
           <summary className="archive-summary-label">
-            how the day settled
+            summary
           </summary>
           <pre>{room.summary}</pre>
         </details>
@@ -78,7 +77,7 @@ export default function ArchiveRoom({
       <div className="room-log">
         {error && <p className="soft-error">{error}</p>}
         {messages && messages.length === 0 && (
-          <p className="room-empty">a quiet day — nothing was said here.</p>
+          <p className="room-empty">no messages.</p>
         )}
         {(messages ?? []).map((m) => {
           if (m.author_type === "user") {

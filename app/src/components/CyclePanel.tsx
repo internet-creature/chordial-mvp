@@ -16,9 +16,9 @@ interface Props {
 }
 
 /** the shared cycle state on the home screen: theme, capacity, every
- * commitment with its real progress (banked minutes flow in from the deer
- * through the sync contract), and the one-tap door - a next action starts
- * a block on the deer's clock. */
+ * commitment with its real progress (banked minutes flow in from the
+ * companion through the sync contract), and the one-tap door - a next
+ * action starts a block on the companion's clock. */
 export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
   const [view, setView] = useState<CyclePayload | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -68,14 +68,14 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
         c.next_action ?? c.task_title ?? c.title,
         pomMinutes,
       );
-      setNote("clock started — the deer has it 🦌");
+      setNote("timer started");
     } catch (e) {
       // the sidecar answering with a refusal ("that task's clock is
       // already running") is a different truth than the sidecar being
       // gone - a network failure is a TypeError, an answered error isn't
       setNote(
         e instanceof TypeError
-          ? "the deer isn’t home — is the sidecar running?"
+          ? "timer unavailable — open the companion and retry."
           : e instanceof Error && e.message
             ? e.message
             : "that didn’t take — try again?",
@@ -96,7 +96,7 @@ export default function CyclePanel({ token, pomMinutes, onAuthLost }: Props) {
     <section className="cycle-panel">
       <header className="cycle-head">
         <div>
-          <h3>the cycle</h3>
+          <h3>cycle</h3>
           {cycle.theme && <p className="cycle-theme">{cycle.theme}</p>}
         </div>
         {view.frozen && (

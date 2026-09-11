@@ -485,7 +485,28 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    typed action schema, fallback ladder + its line pools, idempotency and 30s timeout.
    tests: three distinct kinds enforced; task-free fallback shape; generation checks;
    fallback becomes terminal; proposal creation and rest browsing mutate nothing.
-2. **the page** — route in the main window, thinking state (breathing dot, rotating
+2. **the page** *(BUILT 2026-09-11, branch `dogfood/stuck-page`: `view = "stuck"` in
+   the main window's state enum, `components/StuckPage.tsx` over the pure
+   `lib/stuck.ts` (copy, the cross-window request, which card, hide-the-why, the
+   handoff), `api/client.ts` open/fetch/react wrappers. entry points: Home header
+   right of the date line; companion den (full-width under the bubble) and bar
+   (`stuck?` beside pause) — the companion writes `chordial.stuck.request` to
+   localStorage and invokes the new Rust `show_main`, the main window reads it on
+   the storage event or at mount (stale after a minute); tray `I'm stuck` →
+   `show_main` + `app.emit("chordial:stuck")`. as built: "that's too much" is LOCAL
+   until they leave — `too_much` lands when they close from the rest branch, so
+   the door back costs nothing and the ledger stays true; `exhausted` shows the
+   rest branch; the deer is "ask again" (a fresh request id, the old episode
+   closed best-effort); a 409 on react re-fetches the episode and says "the card
+   changed"; the fallback card carries "try the house again". the accept handoff is
+   slice 2's minimal form — `startFocus` directly with `title: next_action` and the
+   container, then `showCompanion` — slice 3 makes it the idempotent
+   `run_mode="stuck"` execution with the boundary exit. sol's #91 round: the main
+   window HIDES on close like the companion, so `show_main` always has a window
+   to show and quitting stays the tray's or cmd-q's; the rail is dropped in stuck
+   mode (no nav, no doors); a den press hides the den once the page is up while a
+   running bar stays; no in-page cancel while thinking — closing the window is the
+   cancel and the sweep closes what it left open.)* — route in the main window, thinking state (breathing dot, rotating
    lines), the card, rotation, the rest branch, the door back, hide-the-why. the
    button in den / bar / Home / tray.
 3. **after do-this** — accept-time `next_action` write; idempotent execution handoff;

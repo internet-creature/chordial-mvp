@@ -86,9 +86,11 @@ import {
   setAlwaysOnTop,
   windowPosition,
   workArea,
+  showMain,
 } from "../lib/tauriWindow";
 import { useLeafFlourish } from "./LeafFlourish";
 import InlineContent from "./InlineContent";
+import { makeRequest, STUCK_COPY, writeStuckRequest } from "../lib/stuck";
 
 // the bar has one text slot: a fresh saying borrows it this long, then
 // the running task's title has it back. the saying itself stays in the
@@ -485,6 +487,25 @@ export default function DeerWindow() {
   function taskFill(task: TaskRow | DoneTaskRow): number {
     const target = Math.max(task.pom_estimate ?? 1, 0.5) * pomMinutes * 60;
     return Math.min(1, taskSeconds(task.id) / target);
+  }
+
+  /** the press (docs/STUCK_MODE_DESIGN.md §1): the companion can't render
+   * the page, so it writes the request for the main window and raises it.
+   * pressed with a row open, that row is the task they mean. */
+  function onStuck() {
+    writeStuckRequest(
+      window.localStorage,
+      makeRequest("companion", selectedId ?? focus.task_id ?? null),
+    );
+    void showMain()
+      .then(() => {
+        // the page has the room now: a den steps out of the way; a
+        // running bar stays (the clock is still theirs)
+        if (form === "den") return hideWindow();
+      })
+      .catch((err) =>
+        showNotice(err instanceof Error ? err.message : "couldn’t open chordial"),
+      );
   }
 
   /** a click opens the row (or closes it again); nothing starts */
@@ -920,6 +941,15 @@ export default function DeerWindow() {
           {mmss(runSeconds)}
         </span>
         <div className="deer-bar-controls">
+          {token && (
+            <button
+              className="deer-bar-stuck"
+              onClick={onStuck}
+              title={STUCK_COPY.buttonTitle}
+            >
+              {STUCK_COPY.barButton}
+            </button>
+          )}
           {offer && (
             <button
               className="deer-bar-chip"
@@ -1032,6 +1062,16 @@ export default function DeerWindow() {
           )}
         </div>
       </div>
+
+      {token && (
+        <button
+          className="deer-stuck"
+          onClick={onStuck}
+          title={STUCK_COPY.buttonTitle}
+        >
+          {STUCK_COPY.button}
+        </button>
+      )}
 
       {offer &&
         (cardExpanded || offer.frozen ? (

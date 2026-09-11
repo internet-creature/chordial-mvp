@@ -6,7 +6,7 @@ import { useTheme } from "../lib/useTheme";
 
 interface Props {
   council: CouncilMember[];
-  view: "home" | "room" | "archive" | "cycle";
+  view: "home" | "room" | "archive" | "cycle" | "stuck";
   onNavigate: (view: "home" | "room") => void;
 }
 

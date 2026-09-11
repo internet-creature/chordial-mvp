@@ -35,7 +35,7 @@ from typing import Optional, Set
 from aiohttp import web
 
 from src.sidecar.drift import ActivityState, DriftWatch
-from src.sidecar.focus import FocusEngine, FocusError
+from src.sidecar.focus import AlreadyStarted, FocusEngine, FocusError
 from src.sidecar.gates import SpeechGates
 from src.sidecar.lines import pick_line
 from src.sidecar.offers import OfferError, RewindOffers
@@ -228,7 +228,12 @@ class SidecarService:
         the last BROADCAST posture - the change happened between ticks,
         so the tick's own before/after would never see it."""
         if self.engine.crossed_target():
-            await self._announce_unprompted("block_target")
+            # a stuck run's target is the boundary, never the ding
+            # (docs/STUCK_MODE_DESIGN.md section 4) - one or the other
+            moment = ("stuck_boundary"
+                      if self.engine.is_stuck_run(self.store.active_run())
+                      else "block_target")
+            await self._announce_unprompted(moment)
         active = self.store.active_run()
         moment = self.drift.tick(active is not None)
         if moment == "drift_checkin" and active is not None:
@@ -352,26 +357,38 @@ class SidecarService:
         failed = self._apply_resolution(body)
         if failed is not None:
             return failed
+        execution = body.get("execution") if isinstance(body, dict) else None
         switching = self.engine.state().get("running", False)
         try:
             state = self.engine.start(
                 task_id if isinstance(task_id, int) else None,
                 label if isinstance(label, str) else None,
-                target)
+                target, execution=execution)
+        except AlreadyStarted as e:
+            # the same accepted proposal, again (a retry, a reload): the
+            # live run is the answer, no line, no second block
+            return web.json_response({"focus": e.state, "line": "",
+                                      "offer": self.offers.payload(),
+                                      "replayed": True})
         except FocusError as e:
-            return _error(str(e))
+            return _error(str(e), status=409 if "already ran" in str(e) else 400)
         self.ledger.clear()          # a new run starts a new story
         line = await self._announce(
             "focus_switch" if switching else "focus_start")
         return web.json_response({"focus": state, "line": line,
-                                  "offer": self.offers.payload()})
+                                  "offer": self.offers.payload(),
+                                  "replayed": False})
 
     async def _focus_pause(self, request: web.Request) -> web.Response:
         body = await _json_body(request) or {}
         failed = self._apply_resolution(body)
         if failed is not None:
             return failed
-        run = self.engine.pause()
+        reason = body.get("reason", "paused") if isinstance(body, dict) else "paused"
+        try:
+            run = self.engine.pause(reason=reason)
+        except FocusError as e:
+            return _error(str(e))
         if run is None:
             held = self.store.frozen_runs()
             return _error(
@@ -388,7 +405,9 @@ class SidecarService:
                 "offer": self.offers.payload(),
                 "line": line,
             })
-        line = await self._announce("focus_pause")
+        # "stop here" at a stuck run's boundary earns its own line
+        line = await self._announce(
+            "stuck_stopped" if reason == "boundary" else "focus_pause")
         return web.json_response({
             "focus": self.engine.state(),
             "run": run,

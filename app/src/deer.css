@@ -1079,3 +1079,40 @@
 .deer-bar-stuck:focus-visible {
   color: var(--ink);
 }
+
+
+/* the boundary (docs/STUCK_MODE_DESIGN.md section 4): two exits, equal
+   weight - the same shape, the same colour, neither the "real" one. the
+   pair replaces pause/finish while it shows; keep going dismisses it. */
+.deer-boundary-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.deer-boundary-btn:hover:not(:disabled),
+.deer-boundary-btn:focus-visible {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.deer-boundary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.deer-bar-btn.boundary {
+  width: auto;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}

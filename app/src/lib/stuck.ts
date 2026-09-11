@@ -41,6 +41,12 @@ export const STUCK_COPY = {
   askAgain: "ask again",
   tryHouseAgain: "try the house again",
   startedLine: "clock’s running in the companion. i’m right there.",
+  stopHere: "stop here ✓",
+  keepGoing: "keep going",
+  boundaryTitle: "the container’s full — both are real endings",
+  resumeLine: "the first piece exists now. next time doesn’t start from blank.",
+  resumeSaveFailed: "couldn’t save where you stopped — the step is still on the task",
+  resumePrefix: "pick up where you stopped: ",
   chosenLine: "you already chose. the companion has it.",
   enoughPrefix: "enough = ",
   container: (minutes: number) => `${minutes} min · then you choose`,
@@ -236,13 +242,24 @@ export function containerLabel(proposal: StuckProposal): string | null {
     : STUCK_COPY.container(proposal.minutes);
 }
 
-// --- the accept-time handoff (§4, slice 2's minimal form) ----------------------
-// slice 3 makes this the sidecar's idempotent execution with run_mode=stuck
-// and the boundary exit. here: a start is a start, everything else shows
+// --- the accept-time handoff (§4) -------------------------------------------------
+// a start carries the execution the sidecar deduplicates on (the same
+// accepted proposal can never start a second block); everything else shows
 // its line and closes.
 
+export interface HandoffExecution {
+  execution_id: string;
+  episode_id: string;
+}
+
 export type Handoff =
-  | { kind: "start"; taskId: number | null; label: string; minutes: number }
+  | {
+      kind: "start";
+      taskId: number | null;
+      label: string;
+      minutes: number;
+      execution: HandoffExecution;
+    }
   | { kind: "line"; line: string };
 
 export function handoffFor(
@@ -257,6 +274,10 @@ export function handoffFor(
       taskId: execution.task_id,
       label: scope ? `${title}: ${scope}` : title,
       minutes: execution.minutes ?? 2,
+      execution: {
+        execution_id: execution.execution_id,
+        episode_id: execution.episode_id,
+      },
     };
   }
   if (execution.action === "start_company") {
@@ -265,9 +286,48 @@ export function handoffFor(
       taskId: null,
       label: STUCK_COPY.justSitting,
       minutes: execution.minutes ?? 5,
+      execution: {
+        execution_id: execution.execution_id,
+        episode_id: execution.episode_id,
+      },
     };
   }
   return { kind: "line", line: execution.line };
+}
+
+// --- the boundary (§4): stop here saves where they stopped ------------------------
+// v0's resume point is a template (the turn's rewrite is a later capability):
+// the step they did, marked as begun, capped like any scope.
+
+export const RESUME_CAP = 140;
+
+export function resumePoint(step: string | null | undefined): string {
+  const clean = (step ?? "").trim();
+  const prefix = STUCK_COPY.resumePrefix;
+  if (!clean) return prefix.replace(/:\s*$/, "");
+  const room = RESUME_CAP - prefix.length;
+  return prefix + (clean.length > room ? clean.slice(0, room - 1).trimEnd() + "…" : clean);
+}
+
+/** the boundary shows on a stuck run once it is over target, until the
+ * person chooses - an open rewind question takes the stage instead */
+export function boundaryShowing(args: {
+  running: boolean;
+  runMode: string | null | undefined;
+  runId: number | null | undefined;
+  overtime: boolean;
+  dismissedRunId: number | null;
+  questionOpen: boolean;
+}): boolean {
+  return (
+    args.running &&
+    args.runMode === "stuck" &&
+    args.overtime &&
+    !args.questionOpen &&
+    args.runId !== null &&
+    args.runId !== undefined &&
+    args.runId !== args.dismissedRunId
+  );
 }
 
 /** task id -> title, from today's buckets, for the chips and the label */

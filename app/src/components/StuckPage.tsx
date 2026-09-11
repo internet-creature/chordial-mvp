@@ -187,7 +187,7 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
     const plan = handoffFor(result.execution, titles);
     if (plan.kind === "start") {
       try {
-        await startFocus(plan.taskId, plan.label, plan.minutes);
+        await startFocus(plan.taskId, plan.label, plan.minutes, undefined, plan.execution);
         await showCompanion().catch(() => undefined);
         setHandoffLine(STUCK_COPY.startedLine);
       } catch (e) {

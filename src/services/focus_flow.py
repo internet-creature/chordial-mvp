@@ -37,6 +37,7 @@ from src.database.database import get_db
 from src.database.models import ConversationEvent, DeviceEvent, Observation
 from src.services import rewind_tether
 from src.utils.timezone_utils import utc_now
+from src.services import stuck
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,11 @@ def process_pending(user_uuid: Optional[str] = None,
                     # same claim discipline, so each event folds exactly once
                     with db.begin_nested():
                         rewind_tether.fold_event(db, row)
+                elif row.event_type in stuck.FOLDED_TYPES:
+                    # a stuck run's outcome (STUCK_MODE_DESIGN section 7):
+                    # only the runs carrying an episode's execution id fold
+                    with db.begin_nested():
+                        stuck.fold_event(db, row)
             except IntegrityError:
                 # the unique source_event_uuid floor: the consequence
                 # already exists (a racing pass got there) - the savepoint

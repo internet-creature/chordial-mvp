@@ -23,9 +23,24 @@ export interface FocusState {
   run_seconds?: number;
   excised_seconds?: number;
   over_target?: boolean;
+  /** a run started from the stuck page (docs/STUCK_MODE_DESIGN.md §4):
+   * the window renders the boundary exit from this, not from the line */
+  run_mode?: "stuck" | null;
+  episode_id?: string | null;
+  execution_id?: string | null;
   banked: Record<string, number>;
   frozen?: FrozenRun[];
 }
+
+/** the stuck page's typed handoff: the sidecar deduplicates on it */
+export interface StuckHandoff {
+  execution_id: string;
+  episode_id: string;
+}
+
+/** how a pause ends the run: a plain pause, or the stuck run's "stop
+ * here" at its boundary (its own line, its own name in the ledger) */
+export type PauseReason = "paused" | "boundary";
 
 export interface FrozenRun {
   run_id: number;
@@ -126,19 +141,24 @@ export const startFocus = (
   label: string,
   targetMinutes: number,
   resolution?: Resolution,
+  execution?: StuckHandoff,
 ) =>
-  request<{ focus: FocusState; line: string; offer?: RewindOffer | null }>(
-    "/v1/focus/start",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        task_id: taskId,
-        label: label || null,
-        target_minutes: targetMinutes,
-        resolution,
-      }),
-    },
-  );
+  request<{
+    focus: FocusState;
+    line: string;
+    offer?: RewindOffer | null;
+    /** the same execution again: the live run answered, nothing started */
+    replayed?: boolean;
+  }>("/v1/focus/start", {
+    method: "POST",
+    body: JSON.stringify({
+      task_id: taskId,
+      label: label || null,
+      target_minutes: targetMinutes,
+      resolution,
+      execution,
+    }),
+  });
 
 interface TransitionResponse {
   focus: FocusState;
@@ -150,10 +170,13 @@ interface TransitionResponse {
   line: string;
 }
 
-export const pauseFocus = (resolution?: Resolution) =>
+export const pauseFocus = (resolution?: Resolution, reason?: PauseReason) =>
   request<TransitionResponse>("/v1/focus/pause", {
     method: "POST",
-    body: JSON.stringify(resolution ? { resolution } : {}),
+    body: JSON.stringify({
+      ...(resolution ? { resolution } : {}),
+      ...(reason ? { reason } : {}),
+    }),
   });
 
 export const finishFocus = (resolution?: Resolution) =>

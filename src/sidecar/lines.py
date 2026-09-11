@@ -71,6 +71,25 @@ LINE_POOLS: dict[str, list[str]] = {
         "back!! okay. *settles again* we simply continue.",
         "returned and accounted for. the block missed you, quietly.",
     ],
+    # the stuck run's two moments (docs/STUCK_MODE_DESIGN.md section 4):
+    # the boundary replaces the block_target ding - two exits, equal
+    # weight, never a nudge to continue - and the stop at the line gets
+    # its own celebration. stopping on purpose is the whole skill.
+    "stuck_boundary": [
+        "*soft ding* that's the thing. stop here, or keep going - both count.",
+        "*lifts head* you did the piece. stopping now is a whole choice. so "
+        "is going on.",
+        "there's the line you drew. stand on it or step over it - i'm "
+        "counting either way.",
+        "*ears up, gently* the container's full. stop here is a real ending. "
+        "keep going is a real choice.",
+    ],
+    "stuck_stopped": [
+        "stopped at the line you drew. that's the whole skill.",
+        "*settles* you said a few minutes and meant it. banked.",
+        "ended on purpose. that counts for more than it looks.",
+        "*approving ear flick* a boundary, kept. the minutes are in the bank.",
+    ],
     "task_finished": [
         "*FULL EMERGENCY UNLOAF* DONE!! you FINISHED it!! 🦌🎉 look at "
         "that - an actual completed thing, witnessed by an actual deer!!",

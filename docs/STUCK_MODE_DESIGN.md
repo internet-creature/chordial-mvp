@@ -509,7 +509,25 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    cancel and the sweep closes what it left open.)* — route in the main window, thinking state (breathing dot, rotating
    lines), the card, rotation, the rest branch, the door back, hide-the-why. the
    button in den / bar / Home / tray.
-3. **after do-this** — accept-time `next_action` write; idempotent execution handoff;
+3. **after do-this** *(BUILT 2026-09-11, branch `dogfood/stuck-after`: the sidecar's
+   `start(..., execution={execution_id, episode_id})` is idempotent on the execution
+   id — a retry while the run lives replays its state (`replayed: true`, no line,
+   no second block), a retry after it ended is a 409; the run row carries
+   `run_mode="stuck"` + both ids (sidecar column migrations), and so do its
+   `session.started` / `session.ended` events (plus `target_minutes` on the end),
+   while plain runs stay byte-identical; at target crossing the ticker announces
+   `stuck_boundary` instead of `block_target`, never both; `pause(reason="boundary")`
+   is "stop here" — banks under its own name with the `stuck_stopped` line; the
+   window renders the two equal exits from `focus.run_mode` + over-target (the line
+   may be hushed), "keep going" dismisses the pair for that run and the clock keeps
+   counting, "stop here" then PATCHes the task's `next_action` to the v0 template
+   resume point (*pick up where you stopped: <step>*) and the bubble says the
+   evidence line; the server folds `session.started/ended` carrying the episode's
+   own execution id into `StuckEpisode.outcome` (`banked_seconds`,
+   `stopped_at_boundary`, `kept_going` from the target, `run_ref`) inside
+   focus_flow's claimed transaction. NOT built: the 10 / 25 retarget chip after
+   "keep going" — the sidecar has no retarget endpoint; a later nicety.)* —
+   accept-time `next_action` write; idempotent execution handoff;
    step / switch / thread / company; `run_mode="stuck"`; the boundary exit with two
    equal buttons; `stuck_stopped` + resume-point write; globally attributable events.
 4. **attention + body** — durable `AttentionState` / `AwayEpisode`; existing-signal

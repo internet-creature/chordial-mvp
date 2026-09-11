@@ -10,6 +10,7 @@ import { RoomSocket, SocketBus, type SocketStatus } from "./api/ws";
 import type { ArchivedRoom, CouncilMember } from "./api/types";
 import { classifyForNudge } from "./lib/unread";
 import { clearSession, loadSession, storeSession } from "./lib/session";
+import { announceTasksChanged } from "./lib/taskSync";
 
 type View = "home" | "room" | "archive" | "cycle";
 
@@ -111,6 +112,7 @@ export default function App() {
     const socket = new RoomSocket(token, {
       onPayload: (payload) => {
         bus.emitPayload(payload);
+        if (!payload.ephemeral && payload.author_type !== "user") announceTasksChanged();
         // a daily-room council line landing while today's room isn't the
         // watched view becomes the door's nudge (room-aware: cycle lines
         // belong to a different door, mirrored phone lines are the
@@ -133,7 +135,10 @@ export default function App() {
         setSocketStatus(status);
         if (status === "revoked") onAuthLost();
       },
-      onReconnect: () => bus.emitReconnect(),
+      onReconnect: () => {
+        bus.emitReconnect();
+        announceTasksChanged();
+      },
     });
     socket.start();
 

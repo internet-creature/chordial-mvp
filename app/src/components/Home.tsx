@@ -3,7 +3,6 @@ import {
   fetchArc,
   fetchArchive,
   fetchCycleDoors,
-  fetchToday,
   isAuthError,
   openCyclePlanning,
   openCycleRetro,
@@ -13,10 +12,11 @@ import type {
   ArcState,
   CycleDoorsPayload,
   TaskRow,
-  TodayPayload,
 } from "../api/types";
 import type { CycleRoomHandle } from "./Room";
 import CyclePanel from "./CyclePanel";
+import { useToday } from "../lib/useToday";
+import TaskSyncStatus from "./TaskSyncStatus";
 
 interface Props {
   token: string;
@@ -80,7 +80,7 @@ function TaskList({
 }
 
 /** the landing: a greeting, the shape of today, the shared cycle, the door
- * to the room, and the journal of remembered days. */
+ * to the room, and the journal of history. */
 export default function Home({
   token,
   unread,
@@ -89,7 +89,12 @@ export default function Home({
   onOpenArchive,
   onAuthLost,
 }: Props) {
-  const [today, setToday] = useState<TodayPayload | null>(null);
+  const {
+    today,
+    error: taskError,
+    updatedAt,
+    refreshToday,
+  } = useToday(token, onAuthLost);
   const [pastDays, setPastDays] = useState<ArchivedRoom[]>([]);
   const [doors, setDoors] = useState<CycleDoorsPayload | null>(null);
   const [arc, setArc] = useState<ArcState | null>(null);
@@ -98,15 +103,6 @@ export default function Home({
 
   useEffect(() => {
     let cancelled = false;
-    fetchToday(token)
-      .then((payload) => {
-        if (!cancelled) setToday(payload);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        if (isAuthError(e)) onAuthLost();
-        else setError(e instanceof Error ? e.message : "couldn’t load today");
-      });
     fetchArchive(token)
       .then((body) => {
         if (cancelled) return;
@@ -193,6 +189,28 @@ export default function Home({
         <p className="home-date">{dateLine}</p>
       </header>
 
+      <button
+        className="room-invitation"
+        onClick={onEnterRoom}
+        aria-label={`Enter today’s room${unread ? `, ${unread} unread messages` : ""}`}
+      >
+        <span className="room-invitation-icon" aria-hidden="true">
+          ↗
+        </span>
+        <span>
+          <strong>today’s room</strong>
+        </span>
+        <span className="invitation-arrow" aria-hidden="true">
+          {unread > 0 ? unread : "→"}
+        </span>
+      </button>
+
+      <TaskSyncStatus
+        error={taskError}
+        updatedAt={updatedAt}
+        onRefresh={refreshToday}
+      />
+
       {error && <p className="soft-error">{error}</p>}
 
       {buckets && (
@@ -201,11 +219,7 @@ export default function Home({
           <TaskList label="today" tasks={buckets.today} />
           <TaskList label="carried over" tasks={buckets.overdue} />
           <TaskList label="set aside" tasks={buckets.set_aside} muted />
-          {empty && (
-            <p className="home-empty">
-              nothing on the list — a quiet day is allowed.
-            </p>
-          )}
+          {empty && <p className="home-empty">no tasks scheduled.</p>}
         </div>
       )}
 
@@ -217,10 +231,7 @@ export default function Home({
 
       {arc && arc.multiplier > 1 && (
         <p className="arc-line">
-          the house is {arc.posture === "keeping watch" ? "" : "in "}
-          {arc.posture} — {arc.streak} steady{" "}
-          {arc.streak === 1 ? "cycle has" : "cycles have"} stretched
-          check-ins to about every {formatBeat(arc.checkin_minutes)} 🌿
+          check-ins every {formatBeat(arc.checkin_minutes)}
         </p>
       )}
 
@@ -228,7 +239,7 @@ export default function Home({
         <section className="cycle-doors">
           <h3>
             cycle “{doors.doors.cycle.title}” closed
-            {doors.doors.scored ? " — the card is filed" : ""}
+            {doors.doors.scored ? " — reviewed" : ""}
           </h3>
           <div className="cycle-door-row">
             <button
@@ -236,45 +247,26 @@ export default function Home({
               onClick={() => enterCycleRoom("retro")}
               disabled={opening !== null}
             >
-              {doors.doors.retro
-                ? "return to the retro →"
-                : "sit down for the retro →"}
+              open retrospective →
             </button>
             <button
               className="cycle-door"
               onClick={() => enterCycleRoom("planning")}
               disabled={opening !== null}
             >
-              {doors.doors.planning
-                ? "back to planning →"
-                : "plan the next cycle →"}
+              {doors.doors.planning ? "open planning →" : "plan next cycle →"}
             </button>
           </div>
         </section>
       )}
 
-      <button className="enter-room" onClick={onEnterRoom}>
-        step into today’s room →
-        {unread > 0 && (
-          <span
-            className="room-nudge"
-            title={`${unread} new ${unread === 1 ? "line" : "lines"} waiting`}
-          >
-            {unread}
-          </span>
-        )}
-      </button>
-
       {pastDays.length > 0 && (
         <section className="past-days">
-          <h3>remembered days</h3>
+          <h3>history</h3>
           <ul>
             {pastDays.map((r) => (
               <li key={r.room_uuid}>
-                <button
-                  className="past-day"
-                  onClick={() => onOpenArchive(r)}
-                >
+                <button className="past-day" onClick={() => onOpenArchive(r)}>
                   <span className="past-day-date">
                     {r.date
                       ? new Date(`${r.date}T12:00:00`).toLocaleDateString(
@@ -285,7 +277,7 @@ export default function Home({
                         ? `retrospective (${r.subject_id ?? "cycle"})`
                         : r.room_type === "cycle_planning"
                           ? `planning (${r.subject_id ?? "cycle"})`
-                          : "before the rooms"}
+                          : "earlier conversations"}
                   </span>
                   {r.summary_line && (
                     <span className="past-day-hint">{r.summary_line}</span>

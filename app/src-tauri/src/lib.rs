@@ -11,6 +11,18 @@ use tauri::{
 };
 use tauri_plugin_window_state::StateFlags;
 
+/// One recovery path for both the main app and the tray. A hidden or
+/// minimized companion is always brought forward without touching its clock.
+#[tauri::command]
+fn show_companion(app: tauri::AppHandle) -> Result<(), String> {
+    let deer = app
+        .get_webview_window("deer")
+        .ok_or("Companion window is unavailable")?;
+    deer.unminimize().map_err(|e| e.to_string())?;
+    deer.show().map_err(|e| e.to_string())?;
+    deer.set_focus().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -41,6 +53,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            show_companion,
             credentials::credential_get,
             credentials::credential_set,
             credentials::credential_clear,
@@ -64,9 +77,12 @@ pub fn run() {
 
             // the tray: chordial lives in the corner of the day, so the
             // deer can be tucked away and called back without the dock
-            let toggle = MenuItem::with_id(
-                app, "toggle-deer", "show / hide the companion", true,
+            let show = MenuItem::with_id(
+                app, "show-deer", "Show companion", true,
                 None::<&str>,
+            )?;
+            let hide = MenuItem::with_id(
+                app, "hide-deer", "Hide companion", true, None::<&str>,
             )?;
             let check = MenuItem::with_id(
                 app, "check-updates", "check for updates", true,
@@ -75,17 +91,15 @@ pub fn run() {
             let quit = MenuItem::with_id(
                 app, "quit", "quit chordial", true, None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&toggle, &check, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &check, &quit])?;
             let mut tray = TrayIconBuilder::new().menu(&menu).on_menu_event(
                 |app, event| match event.id.as_ref() {
-                    "toggle-deer" => {
+                    "show-deer" => {
+                        let _ = show_companion(app.clone());
+                    }
+                    "hide-deer" => {
                         if let Some(deer) = app.get_webview_window("deer") {
-                            if deer.is_visible().unwrap_or(false) {
-                                let _ = deer.hide();
-                            } else {
-                                let _ = deer.show();
-                                let _ = deer.set_focus();
-                            }
+                            let _ = deer.hide();
                         }
                     }
                     "check-updates" => updater::check_interactive(app),

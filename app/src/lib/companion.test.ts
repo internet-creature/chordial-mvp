@@ -65,9 +65,9 @@ describe("per-form positions", () => {
   it("the bar keeps the den's right and bottom edges, and the den grows back", () => {
     // a den placed 16px from the right of a 1440-wide screen: the wider
     // bar must not run off the right edge (sol's #84 round)
-    const den = { x: 1440 - 270 - 16, y: 300 };
+    const den = { x: 1440 - FORM_SIZES.den.width - 16, y: 300 };
     const bar = barPositionFrom(den, FORM_SIZES.den, FORM_SIZES.bar);
-    expect(bar).toEqual({ x: 1440 - 440 - 16, y: 300 + 500 - 56 });
+    expect(bar).toEqual({ x: 1440 - 440 - 16, y: 300 + FORM_SIZES.den.height - FORM_SIZES.bar.height });
     expect(bar.x + FORM_SIZES.bar.width).toBe(den.x + FORM_SIZES.den.width);
     expect(denPositionFrom(bar, FORM_SIZES.den, FORM_SIZES.bar)).toEqual(den);
   });

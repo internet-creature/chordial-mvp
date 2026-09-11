@@ -86,11 +86,11 @@ import {
   setAlwaysOnTop,
   windowPosition,
   workArea,
+  showMain,
 } from "../lib/tauriWindow";
 import { useLeafFlourish } from "./LeafFlourish";
 import InlineContent from "./InlineContent";
 import { makeRequest, STUCK_COPY, writeStuckRequest } from "../lib/stuck";
-import { showMain } from "../lib/tauriWindow";
 
 // the bar has one text slot: a fresh saying borrows it this long, then
 // the running task's title has it back. the saying itself stays in the
@@ -497,9 +497,15 @@ export default function DeerWindow() {
       window.localStorage,
       makeRequest("companion", selectedId ?? focus.task_id ?? null),
     );
-    void showMain().catch((err) =>
-      showNotice(err instanceof Error ? err.message : "couldn’t open chordial"),
-    );
+    void showMain()
+      .then(() => {
+        // the page has the room now: a den steps out of the way; a
+        // running bar stays (the clock is still theirs)
+        if (form === "den") return hideWindow();
+      })
+      .catch((err) =>
+        showNotice(err instanceof Error ? err.message : "couldn’t open chordial"),
+      );
   }
 
   /** a click opens the row (or closes it again); nothing starts */

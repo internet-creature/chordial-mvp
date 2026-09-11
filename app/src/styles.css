@@ -1615,10 +1615,6 @@ input[type="checkbox"] {
   color: var(--ink-faint);
 }
 
-.stuck-leave {
-  margin-top: 12px;
-}
-
 .stuck-rest {
   display: flex;
   flex-direction: column;

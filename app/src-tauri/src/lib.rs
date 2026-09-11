@@ -58,13 +58,16 @@ pub fn run() {
                 .build(),
         )
         .manage(sidecar::SidecarState::new())
-        // the companion window is never destroyed while the app runs: a
-        // platform close (cmd-w, the window menu) HIDES her exactly like
-        // her own close button, so the tray can always bring her back and
-        // the sidecar's clock keeps counting underneath (sol's #84
-        // round - a destroyed window could not be re-shown)
+        // neither window is destroyed while the app runs: a platform close
+        // (cmd-w, the window menu) HIDES it, so the tray can always bring
+        // it back. the companion: her own close button does the same and
+        // the sidecar's clock keeps counting underneath (sol's #84 round -
+        // a destroyed window could not be re-shown). the main window: the
+        // companion's and the tray's "i'm stuck" raise it with show_main,
+        // which can only show a window that still exists (sol's #91
+        // round). quitting is the tray's or cmd-q's, never a close.
         .on_window_event(|window, event| {
-            if window.label() == "deer" {
+            if window.label() == "deer" || window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();

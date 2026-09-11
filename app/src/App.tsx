@@ -243,7 +243,12 @@ export default function App() {
 
   return (
     <div className="shell">
-      <PresenceRail council={council} view={view} onNavigate={setView} />
+      {/* the stuck page shows one thing: no rail, no doors (§2). the
+          window's own close is the only way out of thinking, and the
+          page's own controls are the way out of a card. */}
+      {view !== "stuck" && (
+        <PresenceRail council={council} view={view} onNavigate={setView} />
+      )}
       <main className="stage">
         {view === "home" && (
           <Home

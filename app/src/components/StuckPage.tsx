@@ -32,7 +32,9 @@ interface Props {
 }
 
 /** the page behind the button (docs/STUCK_MODE_DESIGN.md §2): nothing
- * else of the app on screen. thinking, then ONE card; "something
+ * else of the app on screen (the shell drops the rail). no cancel while
+ * thinking - closing the window is the cancel, and the sweep closes what
+ * a closed window left open. thinking, then ONE card; "something
  * different" rotates the kind, "that's too much" is the rest branch
  * (local until they leave - the too_much reaction lands when they
  * actually rest, so the door back costs nothing). the deer is the door to
@@ -270,9 +272,6 @@ export default function StuckPage({ token, request, onClose, onAuthLost }: Props
             </h1>
             <span className="stuck-breath" aria-hidden="true" />
             <p className="stuck-sub">{thinkingLine(tick)}</p>
-            <button className="stuck-alt stuck-leave" onClick={() => leave("closed")}>
-              {STUCK_COPY.close}
-            </button>
           </div>
         ) : showRest ? (
           <div className="stuck-rest">

@@ -501,7 +501,12 @@ Depends on dogfood slice 5 (`focus_day.py` — the brief is built from it). Then
    changed"; the fallback card carries "try the house again". the accept handoff is
    slice 2's minimal form — `startFocus` directly with `title: next_action` and the
    container, then `showCompanion` — slice 3 makes it the idempotent
-   `run_mode="stuck"` execution with the boundary exit.)* — route in the main window, thinking state (breathing dot, rotating
+   `run_mode="stuck"` execution with the boundary exit. sol's #91 round: the main
+   window HIDES on close like the companion, so `show_main` always has a window
+   to show and quitting stays the tray's or cmd-q's; the rail is dropped in stuck
+   mode (no nav, no doors); a den press hides the den once the page is up while a
+   running bar stays; no in-page cancel while thinking — closing the window is the
+   cancel and the sweep closes what it left open.)* — route in the main window, thinking state (breathing dot, rotating
    lines), the card, rotation, the rest branch, the door back, hide-the-why. the
    button in den / bar / Home / tray.
 3. **after do-this** — accept-time `next_action` write; idempotent execution handoff;

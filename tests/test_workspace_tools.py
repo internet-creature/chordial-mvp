@@ -356,3 +356,20 @@ def test_cycle_spine_tools_share_the_blank_seam(registry):
     result = call(registry, "update_commitment", commitment="walk every day",
                   priority="high", project="", task="")
     assert not result.is_error and "multiple" not in result.content, result.content
+
+
+def test_clearing_a_commitment_next_step_is_explicit(registry):
+    call(registry, "create_cycle", title="week one", status="Active")
+    call(registry, "create_commitment", title="walk every day",
+         next_action="shoes on")
+    assert 'next="shoes on"' in call(registry, "view_cycle").content
+    # a blank is an omission: the step survives
+    kept = call(registry, "update_commitment", commitment="walk every day",
+                priority="high", next_action="")
+    assert not kept.is_error and "next_action" not in kept.content
+    assert 'next="shoes on"' in call(registry, "view_cycle").content
+    # the flag is the way
+    cleared = call(registry, "update_commitment", commitment="walk every day",
+                   clear_next_action=True)
+    assert not cleared.is_error and "next_action" in cleared.content
+    assert "next=" not in call(registry, "view_cycle").content

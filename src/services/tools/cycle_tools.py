@@ -20,6 +20,7 @@ from dainframe.tools.registry import Tool
 
 from src.services.cycles import CycleStore, CycleStoreError
 from src.services.identity import user_of_context
+from src.services.tools.inputs import blank_tolerant
 from src.services.workspace import get_store, vocab
 
 logger = logging.getLogger(__name__)
@@ -289,7 +290,8 @@ def _tool(name, description, properties, handler, *, required=None,
             input_schema={"type": "object", "properties": properties,
                           **({"required": required} if required else {})},
         ),
-        handler=handler, record_event=record_event,
+        # a blank argument is an omitted one (tools/inputs.py)
+        handler=blank_tolerant(handler), record_event=record_event,
     )
 
 

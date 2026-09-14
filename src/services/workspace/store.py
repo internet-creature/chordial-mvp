@@ -466,9 +466,13 @@ class WorkspaceStore:
                    plan_id: Optional[int] = None, goal_id: Optional[int] = None,
                    cycle_id: Optional[int] = None, scheduled_on=None,
                    scheduled_on_or_after=None, scheduled_on_or_before=None,
+                   title_contains: Optional[str] = None,
                    include_closed: bool = False, limit: Optional[int] = None) -> list[dict]:
         with get_db() as db:
             q = db.query(Task).filter(Task.user_uuid == user_uuid)
+            if title_contains is not None and title_contains.strip():
+                q = q.filter(Task.title.ilike(
+                    f"%{_escape_like(title_contains.strip())}%", escape="\\"))
             if status is not None:
                 q = q.filter(Task.status == vocab.canonical_status("task", status))
             elif not include_closed:
@@ -816,6 +820,10 @@ class WorkspaceStore:
         model = _MODELS[entity]
         to_dict = getattr(self, self._RESOLVE_DICTS[entity])
         title_col = Note.title if entity == "note" else model.title
+        if not ref or not ref.strip():
+            # a blank ref would fall to the substring tier and match every
+            # row; nothing is what it names
+            return ResolutionResult()
         with get_db() as db:
             parsed = vocab.parse_public_id(ref)
             if parsed is not None and parsed[0] == entity:

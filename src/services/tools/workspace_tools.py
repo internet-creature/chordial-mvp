@@ -14,7 +14,8 @@ conventions: handlers accept friendly arguments (names or public ids,
 display-vocab statuses), name resolution never guesses between look-alikes
 (ambiguity returns the candidates as the tool result), list_* tools don't
 record events, and the store enforces every invariant - handlers translate,
-they don't decide.
+they don't decide. a blank argument is an omitted argument (inputs.py):
+clearing is always explicit, never an empty string.
 
 `helper` attribution on wins/check-ins/notes/occasions comes from the
 acting-helper contextvar (the save_memory precedent), never from the model.
@@ -22,7 +23,7 @@ acting-helper contextvar (the save_memory precedent), never from the model.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Optional
 
 from config import Config
@@ -32,6 +33,7 @@ from src.services.workspace.agenda import user_today
 from dainframe.tools.context import ToolContext
 from dainframe.tools.registry import Tool
 from src.services.identity import user_of_context
+from src.services.tools.inputs import blank_tolerant
 
 # the ids a plan may be stewarded by: the AUTHORED council (the persona
 # cards - repo truth, env-independent, so tool-definition bytes never drift
@@ -105,8 +107,9 @@ def _resolve(user_uuid: str, entity: str, ref: str, plural_noun: str):
 
 
 def _resolve_id(user_uuid: str, entity: str, ref, plural_noun: str):
-    """like _resolve but returns (id, None); passes None refs through."""
-    if ref is None:
+    """like _resolve but returns (id, None); passes None (and blank) refs
+    through - a blank is an omission, never a match-everything pattern."""
+    if ref is None or not str(ref).strip():
         return None, None
     row, err = _resolve(user_uuid, entity, str(ref), plural_noun)
     return (row["id"], None) if row else (None, err)
@@ -114,6 +117,19 @@ def _resolve_id(user_uuid: str, entity: str, ref, plural_noun: str):
 
 def _fields_note(changes: dict) -> str:
     return ", ".join(sorted(changes.keys()))
+
+
+def _date_arg(tool_input: dict, key: str):
+    """(iso-string-or-None, None) for an absent or well-formed date argument,
+    (None, promptable-error) otherwise - so a malformed date is the model's
+    correction to make, not a store exception."""
+    value = tool_input.get(key)
+    if value is None:
+        return None, None
+    try:
+        return date.fromisoformat(str(value).strip()).isoformat(), None
+    except ValueError:
+        return None, f"{key} must be an ISO date (YYYY-MM-DD), not '{value}'."
 
 
 # ============================ TASKS ========================================
@@ -128,12 +144,19 @@ async def _list_tasks(tool_input: dict, context: ToolContext) -> str:
     cycle_id, err = _resolve_id(user_uuid, "cycle", tool_input.get("sprint"), "cycles")
     if err:
         return err
+    on_or_after, err = _date_arg(tool_input, "scheduled_on_or_after")
+    if err:
+        return err
+    on_or_before, err = _date_arg(tool_input, "scheduled_on_or_before")
+    if err:
+        return err
     rows = store.list_tasks(
         user_uuid,
         status=tool_input.get("status"),
         plan_id=plan_id, cycle_id=cycle_id,
-        scheduled_on_or_after=tool_input.get("scheduled_on_or_after"),
-        scheduled_on_or_before=tool_input.get("scheduled_on_or_before"),
+        scheduled_on_or_after=on_or_after,
+        scheduled_on_or_before=on_or_before,
+        title_contains=tool_input.get("title_contains"),
         include_closed=bool(tool_input.get("include_closed")),
         limit=_cap(tool_input.get("limit")),
     )
@@ -170,11 +193,14 @@ async def _create_task(tool_input: dict, context: ToolContext) -> str:
     links, err = _task_link_ids(tool_input, user_uuid)
     if err:
         return err
+    scheduled, err = _date_arg(tool_input, "scheduled_date")
+    if err:
+        return err
     row = _store().create_task(
         user_uuid, title,
         status=tool_input.get("status") or "To do",
         priority=tool_input.get("priority"),
-        scheduled=tool_input.get("scheduled_date"),
+        scheduled=scheduled,
         window=tool_input.get("window"),
         pom_estimate=tool_input.get("pom_estimate"),
         helper=tool_input.get("helper"),
@@ -196,14 +222,23 @@ async def _update_task(tool_input: dict, context: ToolContext) -> str:
     links, err = _task_link_ids(tool_input, user_uuid)
     if err:
         return err
+    scheduled, err = _date_arg(tool_input, "scheduled_date")
+    if err:
+        return err
     changes = dict(links or {})
+    if scheduled is not None:
+        changes["scheduled"] = scheduled
     for key, store_key in (("new_title", "title"), ("status", "status"),
-                           ("priority", "priority"), ("scheduled_date", "scheduled"),
+                           ("priority", "priority"),
                            ("pom_estimate", "pom_estimate"), ("window", "window"),
                            ("helper", "helper"), ("description", "description"),
                            ("next_action", "next_action")):
         if tool_input.get(key) is not None:
             changes[store_key] = tool_input[key]
+    # clearing the scope is an explicit ask, never a blank next_action (a
+    # blank is an omission - see inputs.py); the flag wins over both
+    if tool_input.get("clear_next_action"):
+        changes["next_action"] = None
     if not changes:
         return "nothing to update - pass at least one field to change."
     row = _store().update_task(user_uuid, target["id"], **changes)
@@ -634,7 +669,8 @@ def _tool(name, description, properties, handler, *, required=None,
             input_schema={"type": "object", "properties": properties,
                           **({"required": required} if required else {})},
         ),
-        handler=handler, record_event=record_event, terminal=terminal,
+        handler=blank_tolerant(handler), record_event=record_event,
+        terminal=terminal,
     )
 
 
@@ -652,22 +688,28 @@ _TASK_WRITE_PROPS = {
     "description": {"type": "string"},
     "next_action": {"type": "string",
                     "description": "The scope: the one-line first piece a "
-                                   "focus block runs on (max 140 chars). "
-                                   "Pass '' to clear."},
+                                   "focus block runs on (max 140 chars)."},
 }
 
 LIST_TASKS = _tool(
     "list_tasks",
     "List the user's tasks. Filter by any combination of status, priority, "
-    "plan (project), cycle (sprint), and scheduled date range. You already "
-    "see a compact agenda summary with each message; use this to look beyond "
-    "it. Results are sorted by scheduled date; each line ends with the "
-    "task's id.",
+    "plan (project), cycle (sprint), scheduled date range, and a title "
+    "fragment (title_contains). You already see a compact agenda summary "
+    "with each message, but it truncates ('...and N more'): before changing "
+    "a group of tasks, list them here first so none are missed. Only pass "
+    "the filters you mean. Results are sorted by scheduled date; each line "
+    "ends with the task's id.",
     {
         "status": {"type": "string", "enum": _TASK_STATUS},
         "priority": {"type": "string", "enum": _TASK_PRIORITY},
         "project": {"type": "string", "description": "Plan name to filter by."},
         "sprint": {"type": "string", "description": "Cycle name to filter by."},
+        "title_contains": {"type": "string",
+                           "description": "Case-insensitive fragment the "
+                                          "title must contain (e.g. "
+                                          "'Pomodoro' for every task whose "
+                                          "title starts with it)."},
         "scheduled_on_or_after": _ISO_DATE,
         "scheduled_on_or_before": _ISO_DATE,
         "include_closed": _INCLUDE_CLOSED,
@@ -687,12 +729,18 @@ CREATE_TASK = _tool(
 
 UPDATE_TASK = _tool(
     "update_task",
-    "Update a task (identify by title or id via 'task'). Pass only fields to "
-    "change: mark done (status='Done'), reprioritize, reschedule, re-link, "
-    "or rename (new_title). Rescheduling later counts a slip; renegotiate "
-    "kindly around 2-3.",
+    "Update a task (identify by title or id via 'task'). Pass ONLY the fields "
+    "you are changing and omit every other one - never send blanks or "
+    "placeholder values (a blank is ignored; a placeholder would be applied). "
+    "Mark done (status='Done'), reprioritize, reschedule, re-link, rename "
+    "(new_title), or clear the scope (clear_next_action=true). Rescheduling "
+    "later counts a slip; renegotiate kindly around 2-3.",
     {"task": {"type": "string", "description": "Title or id of the task."},
-     "new_title": {"type": "string"}, **_TASK_WRITE_PROPS},
+     "new_title": {"type": "string"}, **_TASK_WRITE_PROPS,
+     "clear_next_action": {"type": "boolean",
+                           "description": "true to clear the scope "
+                                          "(next_action) - the only way to "
+                                          "unset it."}},
     _update_task, required=["task"],
 )
 

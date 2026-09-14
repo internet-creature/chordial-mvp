@@ -265,3 +265,94 @@ def test_update_cycle_redirects_frozen_capacity_to_change_scope(registry):
     assert "scope change recorded" in out
     out = call(registry, "view_cycle").content
     assert "capacity=8 blocks" in out
+
+
+# --- blank arguments are omissions (tools/inputs.py) -------------------------
+#
+# the "archive the pomodoro tasks" morning: gpt-5.6-terra padded every
+# optional field it wasn't setting ("" for the links and the scope, 0 for
+# the estimate) and the handlers applied the blanks - a blank project matched
+# every plan, so six status updates failed at the resolver and vel blamed the
+# workspace. the dainframe's openai provider now prevents the padding at the
+# wire (strict tools); these pin the product-side defense for whatever still
+# arrives blank.
+
+PADDED_BLANKS = dict(project="", sprint="", goal="", description="",
+                     next_action="", new_title="", scheduled_date="", helper="")
+
+
+def test_padded_blank_arguments_are_ignored_and_the_status_still_lands(registry):
+    call(registry, "create_project", title="YouTube Video Essay")
+    call(registry, "create_project", title="Cadenza")
+    call(registry, "create_task", title="Pomodoro 2: record the real voiceover",
+         next_action="open the script")
+    result = call(registry, "update_task", task="Pomodoro 2: record the real voiceover",
+                  status="deprioritized", **PADDED_BLANKS)
+    assert not result.is_error, result.content
+    assert result.content == "updated task (id=t1): status."
+    listing = call(registry, "list_tasks", include_closed=True).content
+    assert "[deprioritized]" in listing
+    # the blank next_action did NOT clear the scope, the blank title didn't rename
+    assert 'next="open the script"' in listing
+    assert "Pomodoro 2: record the real voiceover" in listing
+
+
+def test_whitespace_only_link_is_an_omission_too(registry):
+    call(registry, "create_project", title="a")
+    call(registry, "create_project", title="b")
+    call(registry, "create_task", title="walk outside")
+    result = call(registry, "update_task", task="walk outside", status="Done",
+                  project="   ")
+    assert not result.is_error and "multiple plans" not in result.content
+
+
+def test_clearing_the_scope_is_explicit(registry):
+    call(registry, "create_task", title="walk outside", next_action="shoes on")
+    assert 'next="shoes on"' in call(registry, "list_tasks").content
+    result = call(registry, "update_task", task="walk outside", clear_next_action=True)
+    assert not result.is_error and "next_action" in result.content
+    assert "next=" not in call(registry, "list_tasks").content
+
+
+def test_blank_list_filters_are_ignored(registry):
+    call(registry, "create_project", title="a")
+    call(registry, "create_project", title="b")
+    call(registry, "create_task", title="walk outside")
+    listing = call(registry, "list_tasks", project="", sprint="",
+                   scheduled_on_or_after="", title_contains="")
+    assert not listing.is_error and "walk outside" in listing.content
+
+
+def test_malformed_date_is_a_promptable_error_not_an_exception(registry):
+    call(registry, "create_task", title="walk outside")
+    result = call(registry, "update_task", task="walk outside",
+                  scheduled_date="tomorrow")
+    assert not result.is_error
+    assert result.content == (
+        "scheduled_date must be an ISO date (YYYY-MM-DD), not 'tomorrow'.")
+    listing = call(registry, "list_tasks", scheduled_on_or_before="soon")
+    assert "scheduled_on_or_before must be an ISO date" in listing.content
+
+
+def test_title_contains_finds_the_whole_sweep(registry):
+    for n in range(1, 8):
+        call(registry, "create_task", title=f"Pomodoro {n}: video bit {n}")
+    call(registry, "create_task", title="walk outside")
+    listing = call(registry, "list_tasks", title_contains="pomodoro").content
+    assert listing.startswith("7 task(s):")
+    assert "walk outside" not in listing
+    # like-pattern characters in the fragment are literal
+    assert "no tasks matched." == call(registry, "list_tasks",
+                                       title_contains="%").content
+
+
+def test_cycle_spine_tools_share_the_blank_seam(registry):
+    call(registry, "create_project", title="a")
+    call(registry, "create_project", title="b")
+    call(registry, "create_cycle", title="week one", status="Active")
+    call(registry, "create_task", title="walk outside")
+    made = call(registry, "create_commitment", title="walk every day", project="")
+    assert not made.is_error and "multiple plans" not in made.content, made.content
+    result = call(registry, "update_commitment", commitment="walk every day",
+                  priority="high", project="", task="")
+    assert not result.is_error and "multiple" not in result.content, result.content

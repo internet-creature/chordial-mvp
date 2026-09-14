@@ -371,3 +371,23 @@ class TestCrossUserIsolation:
 
 def store_titles(rows):
     return [r["title"] for r in rows]
+
+
+def test_resolve_blank_ref_matches_nothing(store):
+    # a blank would otherwise fall to the substring tier ('%%') and match
+    # every row - the padded-call failure mode
+    store.create_plan(U1, "a", helper="vel")
+    store.create_plan(U1, "b", helper="vel")
+    for ref in ("", "   "):
+        result = store.resolve(U1, "plan", ref)
+        assert result.match is None and not result.candidates
+
+
+def test_list_tasks_title_contains_is_case_insensitive_and_literal(store):
+    store.create_task(U1, "Pomodoro 1: a")
+    store.create_task(U1, "pomodoro 2: b")
+    store.create_task(U1, "walk 100% outside")
+    assert len(store.list_tasks(U1, title_contains="POMODORO")) == 2
+    assert [r["title"] for r in store.list_tasks(U1, title_contains="100%")] == [
+        "walk 100% outside"]
+    assert len(store.list_tasks(U1, title_contains="  ")) == 3

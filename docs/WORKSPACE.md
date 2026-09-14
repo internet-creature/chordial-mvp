@@ -62,6 +62,19 @@ allowlist crashes at startup, on purpose). Helper attribution on
 wins/check-ins/notes/occasions comes from the acting-helper contextvar, never
 from the model.
 
+**A blank argument is an omitted argument.** `src/services/tools/inputs.py`
+wraps every workspace and cycle-spine handler so a `""`/whitespace value
+never reaches it, and the store's resolver matches nothing on a blank ref
+(it used to fall to the substring tier and match *every* row). Clearing a
+field is therefore always explicit — `update_task(clear_next_action=true)`
+— never an empty string. This is the product-side half of the padded-call
+fix; the wire-side half is the dainframe's OpenAI provider rendering tools
+in strict mode (optionals nullable, nulls stripped), so a model that pads
+optional fields it isn't setting says `null` instead of `""`/`0`/the first
+enum value. Malformed dates come back as a promptable correction, and
+`list_tasks(title_contains=…)` exists so a bulk change ("every task starting
+with Pomodoro") can list its whole target set before touching it.
+
 ## The agenda
 
 `src/services/workspace/agenda.py` builds two things live from the store (no

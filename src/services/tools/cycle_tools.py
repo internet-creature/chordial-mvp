@@ -20,6 +20,7 @@ from dainframe.tools.registry import Tool
 
 from src.services.cycles import CycleStore, CycleStoreError
 from src.services.identity import user_of_context
+from src.services.tools.inputs import blank_tolerant
 from src.services.workspace import get_store, vocab
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,10 @@ async def _update_commitment(tool_input: dict, context: ToolContext) -> str:
     for key in ("priority", "blocks_planned", "next_action", "status"):
         if key in tool_input and tool_input[key] is not None:
             changes[key] = tool_input[key]
+    # clearing the next step is an explicit ask, never a blank next_action
+    # (a blank is an omission - tools/inputs.py); the flag wins over both
+    if tool_input.get("clear_next_action"):
+        changes["next_action"] = None
     if tool_input.get("project") is not None:
         plan_id, err = _resolve_workspace_id(
             user_uuid, "plan", tool_input["project"], "plans")
@@ -289,7 +294,8 @@ def _tool(name, description, properties, handler, *, required=None,
             input_schema={"type": "object", "properties": properties,
                           **({"required": required} if required else {})},
         ),
-        handler=handler, record_event=record_event,
+        # a blank argument is an omitted one (tools/inputs.py)
+        handler=blank_tolerant(handler), record_event=record_event,
     )
 
 
@@ -332,11 +338,13 @@ CREATE_COMMITMENT = _tool(
 
 UPDATE_COMMITMENT = _tool(
     "update_commitment",
-    "Update a commitment (identify by title or id via 'commitment'). "
-    "Renaming, re-prioritizing, setting the next_action, re-linking, and "
-    "completing (status='Completed') are always ordinary updates. On a "
-    "frozen cycle, resizing blocks or releasing must go through "
-    "change_scope instead - this tool will say so.",
+    "Update a commitment (identify by title or id via 'commitment'). Pass "
+    "ONLY the fields you are changing and omit the rest - never send blanks "
+    "or placeholders. Renaming, re-prioritizing, setting the next_action "
+    "(or clearing it: clear_next_action=true), re-linking, and completing "
+    "(status='Completed') are always ordinary updates. On a frozen cycle, "
+    "resizing blocks or releasing must go through change_scope instead - "
+    "this tool will say so.",
     {
         "commitment": {"type": "string",
                        "description": "Title or id (like cm3)."},
@@ -345,6 +353,9 @@ UPDATE_COMMITMENT = _tool(
         "blocks_planned": {"type": "integer"},
         "next_action": {"type": "string",
                         "description": "The one clear next step."},
+        "clear_next_action": {"type": "boolean",
+                              "description": "true to clear the next step "
+                                             "- the only way to unset it."},
         "status": {"type": "string", "enum": _COMMITMENT_STATUS},
         "project": {"type": "string", "description": "Plan name or id."},
         "task": {"type": "string", "description": "Task name or id."},

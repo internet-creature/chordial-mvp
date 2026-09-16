@@ -373,3 +373,101 @@ def test_clearing_a_commitment_next_step_is_explicit(registry):
                    clear_next_action=True)
     assert not cleared.is_error and "next_action" in cleared.content
     assert "next=" not in call(registry, "view_cycle").content
+
+
+# --- the sweep pieces (fix/task-sweeps) ---------------------------------------
+
+
+def test_list_tasks_reports_the_set_size_when_the_page_is_smaller(registry):
+    for n in range(1, 8):
+        call(registry, "create_task", title=f"Pomodoro #{n}: bit")
+    listing = call(registry, "list_tasks", title_prefix="Pomodoro #", limit=3).content
+    assert listing.startswith(
+        "showing 1-3 of 7 matching task(s) - pass offset=3 for the next page:")
+    assert listing.count("\n- ") == 3
+    whole = call(registry, "list_tasks", title_prefix="Pomodoro #").content
+    assert whole.startswith("7 task(s):")
+
+
+def test_a_set_past_the_page_cap_can_be_walked_completely(registry):
+    cap = Config.WORKSPACE_MAX_PAGE_SIZE
+    for n in range(1, cap + 6):
+        call(registry, "create_task", title=f"Pomodoro #{n}: bit")
+    first = call(registry, "list_tasks", title_prefix="Pomodoro #", limit=999).content
+    assert first.startswith(
+        f"showing 1-{cap} of {cap + 5} matching task(s) - pass offset={cap} for the next page:")
+    second = call(registry, "list_tasks", title_prefix="Pomodoro #", offset=cap).content
+    assert second.startswith(f"showing {cap + 1}-{cap + 5} of {cap + 5} matching task(s):")
+    ids = lambda page: [w for w in page.split() if w.startswith("id=")]
+    walked = ids(first) + ids(second)
+    assert len(walked) == cap + 5 and len(set(walked)) == cap + 5   # no overlap, no gap
+    beyond = call(registry, "list_tasks", title_prefix="Pomodoro #", offset=cap + 5).content
+    assert beyond == f"no tasks past offset {cap + 5} - the set has {cap + 5}."
+
+
+def test_title_prefix_means_starts_with(registry):
+    call(registry, "create_task", title="Pomodoro #1: record")
+    call(registry, "create_task", title="Review Pomodoro notes")
+    listing = call(registry, "list_tasks", title_prefix="pomodoro").content
+    assert "Pomodoro #1" in listing and "Review" not in listing
+
+
+def test_priority_filter_sees_past_the_first_page(registry):
+    call(registry, "create_task", title="no priority")
+    call(registry, "create_task", title="the urgent one", priority="high")
+    listing = call(registry, "list_tasks", priority="high", limit=1).content
+    assert "the urgent one" in listing
+    assert "unknown priority" in call(registry, "list_tasks", priority="urgent").content
+
+
+def test_archive_tasks_sweeps_a_named_set_in_one_call(registry):
+    for n in range(1, 4):
+        call(registry, "create_task", title=f"Pomodoro #{n}: bit")
+    call(registry, "create_task", title="walk outside")
+    result = call(registry, "archive_tasks", tasks=["t1", "Pomodoro #2: bit", "t3"])
+    assert not result.is_error
+    assert result.content.startswith("archived 3 task(s):")
+    assert "(t1)" in result.content and "(t2)" in result.content
+    open_ = call(registry, "list_tasks").content
+    assert "Pomodoro" not in open_ and "walk outside" in open_
+    closed = call(registry, "list_tasks", status="deprioritized").content
+    assert closed.startswith("3 task(s):")
+
+
+def test_archive_tasks_takes_ids_or_exact_titles_never_a_fragment(registry):
+    call(registry, "create_task", title="Review Pomodoro notes")
+    # unique as a substring today - still not what was named
+    result = call(registry, "archive_tasks", tasks=["Pomodoro"])
+    assert result.content == ("nothing archived - no task with id or exact "
+                              "title 'Pomodoro'. list_tasks gives the ids.")
+    assert "[To do]" in call(registry, "list_tasks").content
+    # exact (case-insensitive) title and id both work
+    assert call(registry, "archive_tasks",
+                tasks=["review pomodoro notes"]).content.startswith("archived 1 task(s)")
+
+
+def test_archive_tasks_is_all_or_nothing_on_an_ambiguous_entry(registry):
+    call(registry, "create_task", title="Pomodoro #1: bit")
+    call(registry, "create_task", title="Pomodoro #2: bit")
+    call(registry, "create_task", title="dup")
+    call(registry, "create_task", title="dup")
+    result = call(registry, "archive_tasks", tasks=["t1", "dup"])
+    assert result.content.startswith("nothing archived - multiple tasks match")
+    assert "[To do]" in call(registry, "list_tasks", task=None).content
+    assert "no tasks matched." == call(registry, "list_tasks",
+                                       status="deprioritized").content
+
+
+def test_archive_tasks_leaves_closed_tasks_alone_and_says_so(registry):
+    call(registry, "create_task", title="finished", status="Done")
+    call(registry, "create_task", title="open")
+    result = call(registry, "archive_tasks", tasks=["finished", "open"])
+    assert result.content.splitlines() == [
+        'archived 1 task(s): "open" (t2).',
+        'left alone (already closed): "finished" (t1) [Done].',
+    ]
+
+
+def test_archive_tasks_records_an_event_like_other_mutations(registry):
+    from src.services.tools.workspace_tools import ARCHIVE_TASKS
+    assert ARCHIVE_TASKS.record_event is True and ARCHIVE_TASKS.terminal is False

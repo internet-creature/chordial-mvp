@@ -448,6 +448,34 @@ class WorkspaceStore:
             db.flush()
             return self._task_dict(row, *self._task_titles(db, user_uuid, row))
 
+    def archive_tasks(self, user_uuid: str, task_ids: list[int]) -> dict:
+        """let a group of tasks go in ONE transaction: each open task goes
+        to deprioritized (closed_at stamped, history and links kept - the
+        same transition update_task(status='deprioritized') makes, without
+        n separate transactions). already-closed tasks are left as they are
+        and reported under 'skipped'. an id that isn't the owner's raises,
+        and nothing is written - a sweep is all or nothing.
+        returns {"archived": [task dicts], "skipped": [task dicts]}."""
+        archived, skipped, plans = [], [], set()
+        with get_db() as db:
+            for task_id in dict.fromkeys(task_ids):   # dedupe, keep order
+                row = self._get_owned(db, Task, user_uuid, task_id, "task")
+                if vocab.is_closed_status("task", row.status):
+                    skipped.append(row)
+                    continue
+                self._apply_status(row, "task", "deprioritized")
+                archived.append(row)
+                plans.add(row.plan_id)
+            for plan_id in plans:
+                self._touch_plan(db, user_uuid, plan_id)
+            db.flush()
+            return {
+                "archived": [self._task_dict(r, *self._task_titles(db, user_uuid, r))
+                             for r in archived],
+                "skipped": [self._task_dict(r, *self._task_titles(db, user_uuid, r))
+                            for r in skipped],
+            }
+
     def _task_titles(self, db, user_uuid: str, row: Task):
         plan_title = goal_title = cycle_title = None
         if row.plan_id:
@@ -462,33 +490,57 @@ class WorkspaceStore:
             cycle_title = c[0] if c else None
         return plan_title, goal_title, cycle_title
 
-    def list_tasks(self, user_uuid: str, *, status: Optional[str] = None,
-                   plan_id: Optional[int] = None, goal_id: Optional[int] = None,
-                   cycle_id: Optional[int] = None, scheduled_on=None,
-                   scheduled_on_or_after=None, scheduled_on_or_before=None,
-                   title_contains: Optional[str] = None,
-                   include_closed: bool = False, limit: Optional[int] = None) -> list[dict]:
+    def _task_query(self, db, user_uuid: str, *, status=None, priority=None,
+                    plan_id=None, goal_id=None, cycle_id=None, scheduled_on=None,
+                    scheduled_on_or_after=None, scheduled_on_or_before=None,
+                    title_contains=None, title_prefix=None,
+                    include_closed: bool = False):
+        """the one place a task filter set becomes SQL - list_tasks and
+        count_tasks share it, so a count is always the count of the same
+        set a listing is a page of. every predicate is applied here, before
+        any limit (a priority filter applied after the page hid matching
+        rows past the first page)."""
+        q = db.query(Task).filter(Task.user_uuid == user_uuid)
+        if title_contains is not None and title_contains.strip():
+            q = q.filter(Task.title.ilike(
+                f"%{_escape_like(title_contains.strip())}%", escape="\\"))
+        if title_prefix is not None and title_prefix.strip():
+            q = q.filter(Task.title.ilike(
+                f"{_escape_like(title_prefix.strip())}%", escape="\\"))
+        if status is not None:
+            q = q.filter(Task.status == vocab.canonical_status("task", status))
+        elif not include_closed:
+            q = q.filter(Task.status.in_(vocab.TASK_STATUS_OPEN))
+        if priority is not None:
+            q = q.filter(Task.priority == vocab.canonical_value(
+                priority, vocab.TASK_PRIORITY, "priority"))
+        for col, val in ((Task.plan_id, plan_id), (Task.goal_id, goal_id),
+                         (Task.cycle_id, cycle_id)):
+            if val is not None:
+                q = q.filter(col == val)
+        if scheduled_on is not None:
+            q = q.filter(Task.scheduled == _coerce_date(scheduled_on))
+        if scheduled_on_or_after is not None:
+            q = q.filter(Task.scheduled >= _coerce_date(scheduled_on_or_after))
+        if scheduled_on_or_before is not None:
+            q = q.filter(Task.scheduled <= _coerce_date(scheduled_on_or_before))
+        return q
+
+    def count_tasks(self, user_uuid: str, **filters) -> int:
+        """how many tasks match - the whole set, not a page (list_tasks'
+        filters, minus limit)."""
         with get_db() as db:
-            q = db.query(Task).filter(Task.user_uuid == user_uuid)
-            if title_contains is not None and title_contains.strip():
-                q = q.filter(Task.title.ilike(
-                    f"%{_escape_like(title_contains.strip())}%", escape="\\"))
-            if status is not None:
-                q = q.filter(Task.status == vocab.canonical_status("task", status))
-            elif not include_closed:
-                q = q.filter(Task.status.in_(vocab.TASK_STATUS_OPEN))
-            for col, val in ((Task.plan_id, plan_id), (Task.goal_id, goal_id),
-                             (Task.cycle_id, cycle_id)):
-                if val is not None:
-                    q = q.filter(col == val)
-            if scheduled_on is not None:
-                q = q.filter(Task.scheduled == _coerce_date(scheduled_on))
-            if scheduled_on_or_after is not None:
-                q = q.filter(Task.scheduled >= _coerce_date(scheduled_on_or_after))
-            if scheduled_on_or_before is not None:
-                q = q.filter(Task.scheduled <= _coerce_date(scheduled_on_or_before))
-            # scheduled-date order (nulls last), then id - the legacy list order
+            return self._task_query(db, user_uuid, **filters).count()
+
+    def list_tasks(self, user_uuid: str, *, limit: Optional[int] = None,
+                   offset: int = 0, **filters) -> list[dict]:
+        with get_db() as db:
+            q = self._task_query(db, user_uuid, **filters)
+            # scheduled-date order (nulls last), then id - the legacy list
+            # order, and a total one, so offset pages never overlap or skip
             q = q.order_by(Task.scheduled.is_(None), Task.scheduled, Task.id)
+            if offset:
+                q = q.offset(offset)
             if limit:
                 q = q.limit(limit)
             rows = q.all()
@@ -811,12 +863,15 @@ class WorkspaceStore:
         "cycle": "_cycle_dict", "note": "_note_dict", "occasion": "_occasion_dict",
     }
 
-    def resolve(self, user_uuid: str, entity: str, ref: str) -> ResolutionResult:
+    def resolve(self, user_uuid: str, entity: str, ref: str, *,
+                substring: bool = True) -> ResolutionResult:
         """name-or-id lookup with the resolution ladder: public id short-circuits;
         otherwise exact title match, then case-insensitive exact, then substring -
         the first tier with ANY matches decides. a unique match resolves; several
         return candidates (the caller lists them instead of guessing); zero fall
-        all the way through to an empty result."""
+        all the way through to an empty result. `substring=False` drops the
+        last rung: a batch mutation names its targets by id or exact title,
+        never by a fragment that happens to be unique today."""
         model = _MODELS[entity]
         to_dict = getattr(self, self._RESOLVE_DICTS[entity])
         title_col = Note.title if entity == "note" else model.title
@@ -834,8 +889,10 @@ class WorkspaceStore:
             tiers = [
                 base.filter(title_col == ref),
                 base.filter(title_col.ilike(_escape_like(ref), escape="\\")),
-                base.filter(title_col.ilike(f"%{_escape_like(ref)}%", escape="\\")),
             ]
+            if substring:
+                tiers.append(base.filter(
+                    title_col.ilike(f"%{_escape_like(ref)}%", escape="\\")))
             for tier in tiers:
                 rows = tier.order_by(model.id).all()
                 if len(rows) == 1:

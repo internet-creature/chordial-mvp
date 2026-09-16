@@ -50,7 +50,8 @@ Two conventions to know:
 `src/services/tools/workspace_tools.py`, registered unconditionally in
 `build_default_registry()`:
 
-- **Core** — `list/create/update_task`, `list/create/update_project` (aliases
+- **Core** — `list/create/update_task`, `archive_tasks` (a named set → 
+  deprioritized in one transaction, all or nothing), `list/create/update_project` (aliases
   that operate on plans; they predate the plan rename and retire with the v4
   persona-prompt pass), `list/create/update_plan`, `list/create/update_cycle`.
 - **Extras** — `create/update/list_goals`, `log_win`/`list_wins`,
@@ -72,8 +73,14 @@ fix; the wire-side half is the dainframe's OpenAI provider rendering tools
 in strict mode (optionals nullable, nulls stripped), so a model that pads
 optional fields it isn't setting says `null` instead of `""`/`0`/the first
 enum value. Malformed dates come back as a promptable correction, and
-`list_tasks(title_contains=…)` exists so a bulk change ("every task starting
-with Pomodoro") can list its whole target set before touching it.
+`list_tasks(title_prefix=…/title_contains=…)` exists so a bulk change ("every
+task starting with Pomodoro") can list its whole target set before touching
+it; every filter (priority included) is applied in SQL before the page, and
+the first line reports the set's size ("showing 25 of 31 …") so a sweep never
+quietly becomes "the first page". `archive_tasks(tasks=[ids])` then lets the
+set go in one transaction. The heavier version of this - server-held
+selections, receipts, replay, undo - is parked for Willowden in
+`CONVERSATIONAL_TASK_BATCHES_DESIGN.md`.
 
 ## The agenda
 

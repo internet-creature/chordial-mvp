@@ -382,10 +382,27 @@ def test_list_tasks_reports_the_set_size_when_the_page_is_smaller(registry):
     for n in range(1, 8):
         call(registry, "create_task", title=f"Pomodoro #{n}: bit")
     listing = call(registry, "list_tasks", title_prefix="Pomodoro #", limit=3).content
-    assert listing.startswith("showing 3 of 7 matching task(s)")
+    assert listing.startswith(
+        "showing 1-3 of 7 matching task(s) - pass offset=3 for the next page:")
     assert listing.count("\n- ") == 3
     whole = call(registry, "list_tasks", title_prefix="Pomodoro #").content
     assert whole.startswith("7 task(s):")
+
+
+def test_a_set_past_the_page_cap_can_be_walked_completely(registry):
+    cap = Config.WORKSPACE_MAX_PAGE_SIZE
+    for n in range(1, cap + 6):
+        call(registry, "create_task", title=f"Pomodoro #{n}: bit")
+    first = call(registry, "list_tasks", title_prefix="Pomodoro #", limit=999).content
+    assert first.startswith(
+        f"showing 1-{cap} of {cap + 5} matching task(s) - pass offset={cap} for the next page:")
+    second = call(registry, "list_tasks", title_prefix="Pomodoro #", offset=cap).content
+    assert second.startswith(f"showing {cap + 1}-{cap + 5} of {cap + 5} matching task(s):")
+    ids = lambda page: [w for w in page.split() if w.startswith("id=")]
+    walked = ids(first) + ids(second)
+    assert len(walked) == cap + 5 and len(set(walked)) == cap + 5   # no overlap, no gap
+    beyond = call(registry, "list_tasks", title_prefix="Pomodoro #", offset=cap + 5).content
+    assert beyond == f"no tasks past offset {cap + 5} - the set has {cap + 5}."
 
 
 def test_title_prefix_means_starts_with(registry):
@@ -417,10 +434,24 @@ def test_archive_tasks_sweeps_a_named_set_in_one_call(registry):
     assert closed.startswith("3 task(s):")
 
 
+def test_archive_tasks_takes_ids_or_exact_titles_never_a_fragment(registry):
+    call(registry, "create_task", title="Review Pomodoro notes")
+    # unique as a substring today - still not what was named
+    result = call(registry, "archive_tasks", tasks=["Pomodoro"])
+    assert result.content == ("nothing archived - no task with id or exact "
+                              "title 'Pomodoro'. list_tasks gives the ids.")
+    assert "[To do]" in call(registry, "list_tasks").content
+    # exact (case-insensitive) title and id both work
+    assert call(registry, "archive_tasks",
+                tasks=["review pomodoro notes"]).content.startswith("archived 1 task(s)")
+
+
 def test_archive_tasks_is_all_or_nothing_on_an_ambiguous_entry(registry):
     call(registry, "create_task", title="Pomodoro #1: bit")
     call(registry, "create_task", title="Pomodoro #2: bit")
-    result = call(registry, "archive_tasks", tasks=["t1", "Pomodoro"])
+    call(registry, "create_task", title="dup")
+    call(registry, "create_task", title="dup")
+    result = call(registry, "archive_tasks", tasks=["t1", "dup"])
     assert result.content.startswith("nothing archived - multiple tasks match")
     assert "[To do]" in call(registry, "list_tasks", task=None).content
     assert "no tasks matched." == call(registry, "list_tasks",

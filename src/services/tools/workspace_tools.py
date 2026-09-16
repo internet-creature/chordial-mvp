@@ -160,17 +160,23 @@ async def _list_tasks(tool_input: dict, context: ToolContext) -> str:
         title_prefix=tool_input.get("title_prefix"),
         include_closed=bool(tool_input.get("include_closed")),
     )
+    offset = max(0, int(tool_input.get("offset") or 0))
     try:
-        rows = store.list_tasks(user_uuid, limit=_cap(tool_input.get("limit")), **filters)
+        rows = store.list_tasks(user_uuid, limit=_cap(tool_input.get("limit")),
+                                offset=offset, **filters)
     except ValueError as e:   # an unknown status/priority value
         return str(e)
-    if not rows:
-        return "no tasks matched."
     total = store.count_tasks(user_uuid, **filters)
-    # the set vs the page: a sweep must never quietly become "the first 25"
-    if total > len(rows):
-        head = (f"showing {len(rows)} of {total} matching task(s) - raise "
-                f"limit or narrow the filters to see the rest:")
+    if not rows:
+        if offset and total:
+            return f"no tasks past offset {offset} - the set has {total}."
+        return "no tasks matched."
+    # the set vs the page: a sweep must never quietly become "the first 25".
+    # the page size is capped, so the way to the rest is the next offset
+    end = offset + len(rows)
+    if total > len(rows) or offset:
+        head = f"showing {offset + 1}-{end} of {total} matching task(s)"
+        head += f" - pass offset={end} for the next page:" if end < total else ":"
     else:
         head = f"{total} task(s):"
     return head + "\n" + "\n".join(f"- {vocab.format_task(r)}" for r in rows)
@@ -265,14 +271,20 @@ async def _archive_tasks(tool_input: dict, context: ToolContext) -> str:
     idents = [str(i).strip() for i in (idents or []) if str(i).strip()]
     if not idents:
         return "which tasks? pass their ids (t42) or exact titles, from list_tasks."
-    # resolve the whole set first: an unknown or ambiguous entry means
-    # nothing is archived, so the sweep is exactly what was named
+    # resolve the whole set first, by id or EXACT title only - a fragment
+    # that is unique today ("Pomodoro") must not pick "Review Pomodoro
+    # notes". an unknown or ambiguous entry means nothing is archived, so
+    # the sweep is exactly what was named
     ids = []
     for ident in idents:
-        target, err = _resolve(user_uuid, "task", ident, "tasks")
-        if err:
-            return f"nothing archived - {err}"
-        ids.append(target["id"])
+        result = _store().resolve(user_uuid, "task", ident, substring=False)
+        if result.match is None:
+            if result.candidates:
+                return ("nothing archived - "
+                        + _candidates_msg("tasks", ident, result.candidates))
+            return (f"nothing archived - no task with id or exact title "
+                    f"'{ident}'. list_tasks gives the ids.")
+        ids.append(result.match["id"])
     receipt = _store().archive_tasks(user_uuid, ids)
     archived, skipped = receipt["archived"], receipt["skipped"]
     lines = []
@@ -741,9 +753,10 @@ LIST_TASKS = _tool(
     "You already see a compact agenda summary with each message, but it "
     "truncates ('...and N more'): before changing a group of tasks, list "
     "them here first so none are missed. Only pass the filters you mean. "
-    "The first line says how many matched; if it says 'showing N of M', the "
-    "list is a page of a larger set. Results are sorted by scheduled date; "
-    "each line ends with the task's id.",
+    "The first line says how many matched; if it says 'showing 1-25 of M', "
+    "the list is a page of a larger set - pass the offset it names to walk "
+    "the rest before acting on the whole set. Results are sorted by "
+    "scheduled date; each line ends with the task's id.",
     {
         "status": {"type": "string", "enum": _TASK_STATUS},
         "priority": {"type": "string", "enum": _TASK_PRIORITY},
@@ -760,6 +773,9 @@ LIST_TASKS = _tool(
         "scheduled_on_or_before": _ISO_DATE,
         "include_closed": _INCLUDE_CLOSED,
         "limit": _LIMIT,
+        "offset": {"type": "integer",
+                   "description": "Rows to skip - the next page's offset is "
+                                  "named on the previous page's first line."},
     },
     _list_tasks, record_event=False,
 )
@@ -799,7 +815,8 @@ ARCHIVE_TASKS = _tool(
     "unknown or ambiguous entry archives nothing. Already-closed tasks are "
     "left alone and reported. Not for completing (that's status='Done').",
     {"tasks": {"type": "array", "items": {"type": "string"},
-               "description": "Task ids (t42) or exact titles, from list_tasks."}},
+               "description": "Task ids (t42) or EXACT titles, from "
+                              "list_tasks - never a fragment."}},
     _archive_tasks, required=["tasks"],
 )
 

@@ -533,11 +533,14 @@ class WorkspaceStore:
             return self._task_query(db, user_uuid, **filters).count()
 
     def list_tasks(self, user_uuid: str, *, limit: Optional[int] = None,
-                   **filters) -> list[dict]:
+                   offset: int = 0, **filters) -> list[dict]:
         with get_db() as db:
             q = self._task_query(db, user_uuid, **filters)
-            # scheduled-date order (nulls last), then id - the legacy list order
+            # scheduled-date order (nulls last), then id - the legacy list
+            # order, and a total one, so offset pages never overlap or skip
             q = q.order_by(Task.scheduled.is_(None), Task.scheduled, Task.id)
+            if offset:
+                q = q.offset(offset)
             if limit:
                 q = q.limit(limit)
             rows = q.all()
@@ -860,12 +863,15 @@ class WorkspaceStore:
         "cycle": "_cycle_dict", "note": "_note_dict", "occasion": "_occasion_dict",
     }
 
-    def resolve(self, user_uuid: str, entity: str, ref: str) -> ResolutionResult:
+    def resolve(self, user_uuid: str, entity: str, ref: str, *,
+                substring: bool = True) -> ResolutionResult:
         """name-or-id lookup with the resolution ladder: public id short-circuits;
         otherwise exact title match, then case-insensitive exact, then substring -
         the first tier with ANY matches decides. a unique match resolves; several
         return candidates (the caller lists them instead of guessing); zero fall
-        all the way through to an empty result."""
+        all the way through to an empty result. `substring=False` drops the
+        last rung: a batch mutation names its targets by id or exact title,
+        never by a fragment that happens to be unique today."""
         model = _MODELS[entity]
         to_dict = getattr(self, self._RESOLVE_DICTS[entity])
         title_col = Note.title if entity == "note" else model.title
@@ -883,8 +889,10 @@ class WorkspaceStore:
             tiers = [
                 base.filter(title_col == ref),
                 base.filter(title_col.ilike(_escape_like(ref), escape="\\")),
-                base.filter(title_col.ilike(f"%{_escape_like(ref)}%", escape="\\")),
             ]
+            if substring:
+                tiers.append(base.filter(
+                    title_col.ilike(f"%{_escape_like(ref)}%", escape="\\")))
             for tier in tiers:
                 rows = tier.order_by(model.id).all()
                 if len(rows) == 1:

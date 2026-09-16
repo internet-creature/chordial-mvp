@@ -150,22 +150,30 @@ async def _list_tasks(tool_input: dict, context: ToolContext) -> str:
     on_or_before, err = _date_arg(tool_input, "scheduled_on_or_before")
     if err:
         return err
-    rows = store.list_tasks(
-        user_uuid,
+    filters = dict(
         status=tool_input.get("status"),
+        priority=tool_input.get("priority"),
         plan_id=plan_id, cycle_id=cycle_id,
         scheduled_on_or_after=on_or_after,
         scheduled_on_or_before=on_or_before,
         title_contains=tool_input.get("title_contains"),
+        title_prefix=tool_input.get("title_prefix"),
         include_closed=bool(tool_input.get("include_closed")),
-        limit=_cap(tool_input.get("limit")),
     )
-    if tool_input.get("priority"):
-        want = vocab.canonical_value(tool_input["priority"], vocab.TASK_PRIORITY, "priority")
-        rows = [r for r in rows if r["priority"] == want]
+    try:
+        rows = store.list_tasks(user_uuid, limit=_cap(tool_input.get("limit")), **filters)
+    except ValueError as e:   # an unknown status/priority value
+        return str(e)
     if not rows:
         return "no tasks matched."
-    return f"{len(rows)} task(s):\n" + "\n".join(f"- {vocab.format_task(r)}" for r in rows)
+    total = store.count_tasks(user_uuid, **filters)
+    # the set vs the page: a sweep must never quietly become "the first 25"
+    if total > len(rows):
+        head = (f"showing {len(rows)} of {total} matching task(s) - raise "
+                f"limit or narrow the filters to see the rest:")
+    else:
+        head = f"{total} task(s):"
+    return head + "\n" + "\n".join(f"- {vocab.format_task(r)}" for r in rows)
 
 
 def _task_link_ids(tool_input: dict, user_uuid: str):
@@ -243,6 +251,40 @@ async def _update_task(tool_input: dict, context: ToolContext) -> str:
         return "nothing to update - pass at least one field to change."
     row = _store().update_task(user_uuid, target["id"], **changes)
     return f"updated task (id={row['public_id']}): {_fields_note(changes)}."
+
+
+def _fmt_brief(row: dict) -> str:
+    return f'"{row["title"]}" ({row["public_id"]})'
+
+
+async def _archive_tasks(tool_input: dict, context: ToolContext) -> str:
+    user_uuid = user_of_context(context)
+    idents = tool_input.get("tasks")
+    if isinstance(idents, str):
+        idents = [idents]
+    idents = [str(i).strip() for i in (idents or []) if str(i).strip()]
+    if not idents:
+        return "which tasks? pass their ids (t42) or exact titles, from list_tasks."
+    # resolve the whole set first: an unknown or ambiguous entry means
+    # nothing is archived, so the sweep is exactly what was named
+    ids = []
+    for ident in idents:
+        target, err = _resolve(user_uuid, "task", ident, "tasks")
+        if err:
+            return f"nothing archived - {err}"
+        ids.append(target["id"])
+    receipt = _store().archive_tasks(user_uuid, ids)
+    archived, skipped = receipt["archived"], receipt["skipped"]
+    lines = []
+    if archived:
+        lines.append(f"archived {len(archived)} task(s): "
+                     + ", ".join(_fmt_brief(r) for r in archived) + ".")
+    else:
+        lines.append("archived 0 tasks.")
+    if skipped:
+        lines.append("left alone (already closed): " + ", ".join(
+            f'{_fmt_brief(r)} [{vocab.display(r["status"])}]' for r in skipped) + ".")
+    return "\n".join(lines)
 
 
 # ============================ PLANS (projects) =============================
@@ -694,22 +736,26 @@ _TASK_WRITE_PROPS = {
 LIST_TASKS = _tool(
     "list_tasks",
     "List the user's tasks. Filter by any combination of status, priority, "
-    "plan (project), cycle (sprint), scheduled date range, and a title "
-    "fragment (title_contains). You already see a compact agenda summary "
-    "with each message, but it truncates ('...and N more'): before changing "
-    "a group of tasks, list them here first so none are missed. Only pass "
-    "the filters you mean. Results are sorted by scheduled date; each line "
-    "ends with the task's id.",
+    "plan (project), cycle (sprint), scheduled date range, and title "
+    "(title_prefix for 'starting with', title_contains for 'mentioning'). "
+    "You already see a compact agenda summary with each message, but it "
+    "truncates ('...and N more'): before changing a group of tasks, list "
+    "them here first so none are missed. Only pass the filters you mean. "
+    "The first line says how many matched; if it says 'showing N of M', the "
+    "list is a page of a larger set. Results are sorted by scheduled date; "
+    "each line ends with the task's id.",
     {
         "status": {"type": "string", "enum": _TASK_STATUS},
         "priority": {"type": "string", "enum": _TASK_PRIORITY},
         "project": {"type": "string", "description": "Plan name to filter by."},
         "sprint": {"type": "string", "description": "Cycle name to filter by."},
+        "title_prefix": {"type": "string",
+                         "description": "Case-insensitive literal the title "
+                                        "must START with (e.g. 'Pomodoro #' "
+                                        "for every 'Pomodoro #3: ...' task)."},
         "title_contains": {"type": "string",
-                           "description": "Case-insensitive fragment the "
-                                          "title must contain (e.g. "
-                                          "'Pomodoro' for every task whose "
-                                          "title starts with it)."},
+                           "description": "Case-insensitive literal the title "
+                                          "must contain somewhere."},
         "scheduled_on_or_after": _ISO_DATE,
         "scheduled_on_or_before": _ISO_DATE,
         "include_closed": _INCLUDE_CLOSED,
@@ -742,6 +788,19 @@ UPDATE_TASK = _tool(
                                           "(next_action) - the only way to "
                                           "unset it."}},
     _update_task, required=["task"],
+)
+
+ARCHIVE_TASKS = _tool(
+    "archive_tasks",
+    "Archive a group of tasks at once - 'let them go': each becomes "
+    "deprioritized (kept in history, off the agenda) in one transaction. "
+    "Use it for 'archive all the X tasks': list_tasks first so the set is "
+    "exactly what the user named, then pass those ids. All or nothing - an "
+    "unknown or ambiguous entry archives nothing. Already-closed tasks are "
+    "left alone and reported. Not for completing (that's status='Done').",
+    {"tasks": {"type": "array", "items": {"type": "string"},
+               "description": "Task ids (t42) or exact titles, from list_tasks."}},
+    _archive_tasks, required=["tasks"],
 )
 
 _PLAN_WRITE_PROPS = {
@@ -1018,7 +1077,7 @@ UPDATE_OCCASION = _tool(
 # the task/plan/cycle surface (the v2-era names plus plan aliases; the
 # aliases retire with the v4 persona-prompt pass)
 WORKSPACE_CORE_TOOLS = [
-    LIST_TASKS, CREATE_TASK, UPDATE_TASK,
+    LIST_TASKS, CREATE_TASK, UPDATE_TASK, ARCHIVE_TASKS,
     LIST_PROJECTS, CREATE_PROJECT, UPDATE_PROJECT,
     LIST_PLANS, CREATE_PLAN, UPDATE_PLAN,
     LIST_CYCLES, CREATE_CYCLE, UPDATE_CYCLE,

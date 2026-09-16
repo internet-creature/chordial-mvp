@@ -391,3 +391,52 @@ def test_list_tasks_title_contains_is_case_insensitive_and_literal(store):
     assert [r["title"] for r in store.list_tasks(U1, title_contains="100%")] == [
         "walk 100% outside"]
     assert len(store.list_tasks(U1, title_contains="  ")) == 3
+
+
+# --- the sweep pieces (fix/task-sweeps) ---------------------------------------
+
+
+def test_priority_filters_before_the_page_not_after(store):
+    # the old handler filtered priority on a page the store had already
+    # capped: a high-priority task past the first row looked absent
+    store.create_task(U1, "first, no priority")
+    store.create_task(U1, "second, high", priority="high")
+    assert [r["title"] for r in store.list_tasks(U1, priority="high", limit=1)] == [
+        "second, high"]
+    assert store.count_tasks(U1, priority="high") == 1
+    # NULL priority is not any priority
+    assert store.count_tasks(U1, priority="low") == 0
+
+
+def test_count_tasks_is_the_whole_set_the_page_belongs_to(store):
+    for n in range(7):
+        store.create_task(U1, f"Pomodoro #{n}: bit")
+    store.create_task(U1, "Review Pomodoro notes")
+    assert store.count_tasks(U1, title_prefix="pomodoro #") == 7
+    assert len(store.list_tasks(U1, title_prefix="pomodoro #", limit=3)) == 3
+    assert store.count_tasks(U1, title_contains="pomodoro") == 8
+    # a prefix is a prefix: like-pattern characters are literal
+    store.create_task(U1, "100% done-ish")
+    assert store.count_tasks(U1, title_prefix="100%") == 1
+    assert store.count_tasks(U1, title_prefix="%") == 0
+
+
+def test_archive_tasks_is_one_transaction_and_skips_the_closed(store):
+    a = store.create_task(U1, "a")
+    b = store.create_task(U1, "b")
+    done = store.create_task(U1, "done already", status="Done")
+    receipt = store.archive_tasks(U1, [a["id"], b["id"], done["id"], a["id"]])
+    assert [r["title"] for r in receipt["archived"]] == ["a", "b"]
+    assert [r["title"] for r in receipt["skipped"]] == ["done already"]
+    rows = {r["title"]: r for r in store.list_tasks(U1, include_closed=True)}
+    assert rows["a"]["status"] == "deprioritized" and rows["a"]["closed_at"]
+    assert rows["done already"]["status"] == "done"   # untouched
+
+
+def test_archive_tasks_all_or_nothing_across_owners(store):
+    mine = store.create_task(U1, "mine")
+    theirs = store.create_task(U2, "theirs")
+    with pytest.raises(ValueError):
+        store.archive_tasks(U1, [mine["id"], theirs["id"]])
+    assert store.list_tasks(U1)[0]["status"] == "todo"      # rolled back
+    assert store.list_tasks(U2)[0]["status"] == "todo"
